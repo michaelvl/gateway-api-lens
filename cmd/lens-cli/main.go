@@ -161,7 +161,7 @@ func main() {
 			}
 			params += fmt.Sprintf("%s<br/>%s/%v", l.Name, l.Protocol, l.Port)
 			if l.Hostname != nil {
-				params += "<br/>" + fmt.Sprintf(" %s", *l.Hostname)
+				params += fmt.Sprintf("<br/><i>%s</i>", *l.Hostname)
 			} else {
 				params = "<br/><i>(no hostname)</i>"
 			}
@@ -189,23 +189,22 @@ func main() {
 	}
 
 	// Edges
-	for _, gwc := range gwcList.Items {
-		for _, gw := range gwList.Items {
-			if string(gw.Spec.GatewayClassName) != gwc.ObjectMeta.Name {
-				continue
+	for _, gw := range gwList.Items {
+		fmt.Printf("	gw_%s_%s -> gwc_%s\n", strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(string(gw.Spec.GatewayClassName), "-", "_"))
+	}
+	for _, rt := range httpRtList.Items {
+		for _, pref := range rt.Spec.ParentRefs {
+			ns := rt.ObjectMeta.Namespace
+			if pref.Namespace != nil {
+				ns = string(*pref.Namespace)
 			}
-			fmt.Printf("	gw_%s_%s -> gwc_%s\n", strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(gwc.ObjectMeta.Name, "-", "_"))
-			for _, rt := range httpRtList.Items {
-				for _, pref := range rt.Spec.ParentRefs {
-					if IsRefToGateway(pref, NamespacedNameOf(&gw)) {
-						fmt.Printf("	httproute_%s_%s -> gw_%s_%s\n", strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"))
-					}
-				}
-				for _, rules := range rt.Spec.Rules {
-					for _, backend := range rules.BackendRefs {
-						fmt.Printf("	backend_%s_%s -> httproute_%s_%s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"))
-					}
-				}
+			if pref.Kind != nil && *pref.Kind == gatewayv1beta1.Kind("Gateway") {
+				fmt.Printf("	httproute_%s_%s -> gw_%s_%s\n", strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
+			}
+		}
+		for _, rules := range rt.Spec.Rules {
+			for _, backend := range rules.BackendRefs {
+				fmt.Printf("	backend_%s_%s -> httproute_%s_%s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"))
 			}
 		}
 	}
