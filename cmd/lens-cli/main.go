@@ -41,15 +41,15 @@ var (
 const (
 	dot_graph_template_header string = `
 digraph gatewayapi_config {
-	graph [
-		label = "Gateway API Configuration\n\n"
-		labelloc = t
-		fontname = "Helvetica,Arial,sans-serif"
-		fontsize = 20
-		layout = dot
-		rankdir = RL
-		newrank = true
-	]
+	rankdir = RL
+	#graph [
+	#	label = "Gateway API Configuration\n\n"
+	#	labelloc = t
+	#	fontname = "Helvetica,Arial,sans-serif"
+	#	fontsize = 20
+	#	layout = dot
+	#	newrank = true
+	#]
 	node [
 		style=filled
 		shape=rect
@@ -104,6 +104,7 @@ digraph gatewayapi_config {
 		shape=plain
 	]
 `
+	dot_cluster_template = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
 )
 
 func main() {
@@ -148,11 +149,16 @@ func main() {
 	//err = cl.List(context.TODO(), svcList, client.InNamespace(""))
 
 	fmt.Print(dot_graph_template_header)
+
+	// Nodes, GatewayClasses
+	fmt.Printf(dot_cluster_template, "cluster_gwc")
 	for _, gwc := range gwcList.Items {
 		fmt.Printf(dot_gatewayclass_template, strings.ReplaceAll(gwc.ObjectMeta.Name, "-", "_"), gwc.ObjectMeta.Name, gwc.Spec.ControllerName)
 	}
+	fmt.Print("\t}\n")
 
-	// Nodes
+	// Nodes, Gateways
+	fmt.Printf(dot_cluster_template, "cluster_gw")
 	for _, gw := range gwList.Items {
 		var params string
 		for idx, l := range gw.Spec.Listeners {
@@ -168,6 +174,10 @@ func main() {
 		}
 		fmt.Printf(dot_gateway_template, strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), gw.ObjectMeta.Namespace, gw.ObjectMeta.Name, params)
 	}
+	fmt.Print("\t}\n")
+
+	// Nodes, HTTPRoutes
+	fmt.Printf(dot_cluster_template, "cluster_httproute")
 	for _, rt := range httpRtList.Items {
 		var params string
 		if rt.Spec.Hostnames != nil {
@@ -181,12 +191,19 @@ func main() {
 			params = "<i>(no hostname)</i>"
 		}
 		fmt.Printf(dot_httproute_template, strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"), rt.ObjectMeta.Namespace, rt.ObjectMeta.Name, params)
+	}
+	fmt.Print("\t}\n")
+
+	// Nodes, backends
+	fmt.Printf(dot_cluster_template, "cluster_backends")
+	for _, rt := range httpRtList.Items {
 		for _, rules := range rt.Spec.Rules {
 			for _, backend := range rules.BackendRefs {
-				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace)), backend.Name, "xxx")
+				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace)), backend.Name, "? endpoint(s)")
 			}
 		}
 	}
+	fmt.Print("\t}\n")
 
 	// Edges
 	for _, gw := range gwList.Items {
