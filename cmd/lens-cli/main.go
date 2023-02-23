@@ -53,6 +53,7 @@ digraph gatewayapi_config {
 	node [
 		style=filled
 		shape=rect
+		color=red
 		pencolor="#00000044" // frames color
 		fontname="Helvetica,Arial,sans-serif"
 		shape=plaintext
