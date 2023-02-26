@@ -9,12 +9,18 @@ import (
 	"path/filepath"
 	"strings"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	//corev1 "k8s.io/api/core/v1"
 	//"k8s.io/apimachinery/pkg/api/errors"
+	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	//"k8s.io/client-go/kubernetes"
@@ -73,7 +79,16 @@ digraph gatewayapi_config {
 		fillcolor="#0044ff22"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>GatewayClass</b><br/>%s</td> </tr>
-			<tr> <td>Controller: %s</td> </tr>
+			<tr> <td>%s</td> </tr>
+		</table>>
+		shape=plain
+	]
+`
+	dot_gatewayclassparams_template = `	gwcp_%s [
+		fillcolor="#0033dd11"
+		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+			<tr> <td> <b>%s/%s</b><br/>%s</td> </tr>
+			<tr> <td>%s</td> </tr>
 		</table>>
 		shape=plain
 	]
@@ -113,6 +128,7 @@ func main() {
 
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1beta1.AddToScheme(scheme))
+	utilruntime.Must(apiextensions.AddToScheme(scheme))
 
 	var kubeconfig *string
 	if home := homedir.HomeDir(); home != "" {
@@ -136,6 +152,7 @@ func main() {
 	cl, _ := client.New(config, client.Options{
 		Scheme: scheme,
 	})
+	dcl := dynamic.NewForConfigOrDie(config)
 
 	gwcList := &gatewayv1beta1.GatewayClassList{}
 	err = cl.List(context.TODO(), gwcList, client.InNamespace(""))
@@ -146,15 +163,48 @@ func main() {
 	httpRtList := &gatewayv1beta1.HTTPRouteList{}
 	err = cl.List(context.TODO(), httpRtList, client.InNamespace(""))
 
+	ingressList := &networkingv1.IngressList{}
+	err = cl.List(context.TODO(), ingressList, client.InNamespace(""))
+
+	// Attached Policies, see https://gateway-api.sigs.k8s.io/geps/gep-713
+	crdResource := schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
+	labSel, _ := labels.Parse("gateway.networking.k8s.io/policy=true")
+	crdDefList, err := dcl.Resource(crdResource).List(context.TODO(), metav1.ListOptions{LabelSelector: labSel.String()})
+	if err != nil {
+		log.Fatalf("Cannot list CRDs: %v", err)
+	}
+	fmt.Printf("Found %d CRDs\n", len(crdDefList.Items))
+	for _, crd := range crdDefList.Items {
+		gvr, _ := crd2gvr(cl, &crd)
+		fmt.Printf("  %s: %+v\n", crd.GetName(), gvr)
+		crdList, err := dcl.Resource(*gvr).List(context.TODO(), metav1.ListOptions{})
+		if err != nil {
+			log.Fatalf("Cannot list CRD %v: %v", gvr, err)
+		}
+		fmt.Printf("Found %d CRD instances\n", len(crdList.Items))
+		for _, crdInst := range crdList.Items {
+			fmt.Printf("  %s/%s\n", crdInst.GetNamespace(), crdInst.GetName())
+			targetRef, found, err := unstructured.NestedMap(crdInst.Object, "spec", "targetRef")
+			if err != nil || !found {
+				log.Fatalf("Missing or invalid targetRef, not a valid attached policy: %s/%s", crdInst.GetNamespace(), crdInst.GetName())
+			}
+			fmt.Printf("  targetRef: %+v\n", targetRef)
+		}
+	}
+
 	//svcList := &corev1.ServiceList{}
 	//err = cl.List(context.TODO(), svcList, client.InNamespace(""))
 
 	fmt.Print(dot_graph_template_header)
 
-	// Nodes, GatewayClasses
+	// Nodes, GatewayClasses and parameters
 	fmt.Printf(dot_cluster_template, "cluster_gwc")
 	for _, gwc := range gwcList.Items {
-		fmt.Printf(dot_gatewayclass_template, strings.ReplaceAll(gwc.ObjectMeta.Name, "-", "_"), gwc.ObjectMeta.Name, gwc.Spec.ControllerName)
+		var params string = fmt.Sprintf("Controller:<br/>%s", gwc.Spec.ControllerName)
+		fmt.Printf(dot_gatewayclass_template, strings.ReplaceAll(gwc.ObjectMeta.Name, "-", "_"), gwc.ObjectMeta.Name, params)
+		if gwc.Spec.ParametersRef != nil {
+			fmt.Printf(dot_gatewayclassparams_template, strings.ReplaceAll(gwc.Spec.ParametersRef.Name, "-", "_"), gwc.Spec.ParametersRef.Group, gwc.Spec.ParametersRef.Kind, gwc.Spec.ParametersRef.Name, "-")
+		}
 	}
 	fmt.Print("\t}\n")
 
@@ -207,6 +257,11 @@ func main() {
 	fmt.Print("\t}\n")
 
 	// Edges
+	for _, gwc := range gwcList.Items {
+		if gwc.Spec.ParametersRef != nil {
+			fmt.Printf("\tgwc_%s -> gwcp_%s\n", strings.ReplaceAll(string(gwc.ObjectMeta.Name), "-", "_"), strings.ReplaceAll(gwc.Spec.ParametersRef.Name, "-", "_"))
+		}
+	}
 	for _, gw := range gwList.Items {
 		fmt.Printf("	gw_%s_%s -> gwc_%s\n", strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(string(gw.Spec.GatewayClassName), "-", "_"))
 	}
@@ -287,4 +342,33 @@ func NamespacedNameOf(obj metav1.Object) types.NamespacedName {
 	}
 
 	return name
+}
+
+// Lookup GVR for CRD in unstructured.Unstructured
+func crd2gvr(cl client.Client, crd *unstructured.Unstructured) (*schema.GroupVersionResource, error) {
+	group, found, err := unstructured.NestedString(crd.Object, "spec", "group")
+	if err != nil || !found {
+		return nil, fmt.Errorf("Cannot lookup group")
+	}
+	kind, found, err := unstructured.NestedString(crd.Object, "spec", "names", "kind")
+	if err != nil || !found {
+		return nil, fmt.Errorf("Cannot lookup kind")
+	}
+	versions, found, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	versionsMap := versions[0].(map[string]any)
+	version := versionsMap["name"].(string)
+
+	gk := schema.GroupKind{
+		Group: group,
+		Kind:  kind,
+	}
+	mapping, err := cl.RESTMapper().RESTMapping(gk, version)
+	if err != nil {
+		return nil, err
+	}
+	return &schema.GroupVersionResource{
+		Group:	  group,
+		Version:  version,
+		Resource: mapping.Resource.Resource,
+	}, nil
 }
