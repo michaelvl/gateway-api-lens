@@ -123,7 +123,7 @@ digraph gatewayapi_config {
 	dot_policy_template = `	policy_%s_%s [
 		fillcolor="#00ccaa22"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>%s</b><br/>%s/%s</td> </tr>
+			<tr> <td> <b>%s/%s</b><br/>%s/%s</td> </tr>
 			<tr> <td>%s</td> </tr>
 		</table>>
 		shape=plain
@@ -269,7 +269,8 @@ func main() {
 
 	// Nodes, attached policies
 	for _, policy := range attachedPolicies {
-		fmt.Printf(dot_policy_template, strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), policy.GetKind(), policy.GetNamespace(), policy.GetName(), "-")
+		gv, _ := schema.ParseGroupVersion(policy.GetAPIVersion())
+		fmt.Printf(dot_policy_template, strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), gv.Group, policy.GetKind(), policy.GetNamespace(), policy.GetName(), "-")
 	}
 
 	// Edges
