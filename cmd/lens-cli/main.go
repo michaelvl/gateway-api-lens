@@ -75,7 +75,7 @@ digraph gatewayapi_config {
 `
 	dot_graph_template_footer string = `}
 `
-	dot_gatewayclass_template = `	gwc_%s [
+	dot_gatewayclass_template = `	GatewayClass_%s [
 		fillcolor="#0044ff22"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>GatewayClass</b><br/>%s</td> </tr>
@@ -93,7 +93,7 @@ digraph gatewayapi_config {
 		shape=plain
 	]
 `
-	dot_gateway_template = `	gw_%s_%s [
+	dot_gateway_template = `	Gateway_%s_%s [
 		fillcolor="#ff880022"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>Gateway</b><br/>%s/%s</td> </tr>
@@ -102,7 +102,7 @@ digraph gatewayapi_config {
 		shape=plain
 	]
 `
-	dot_httproute_template = `	httproute_%s_%s [
+	dot_httproute_template = `	HTTPRoute_%s_%s [
 		fillcolor="#88ff0022"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>HTTPRoute</b><br/>%s/%s</td> </tr>
@@ -114,7 +114,16 @@ digraph gatewayapi_config {
 	dot_backend_template = `	backend_%s_%s [
 		fillcolor="#00888822"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>Service</b><br/>%s/%s</td> </tr>
+			<tr> <td> <b>%s</b><br/>%s/%s</td> </tr>
+			<tr> <td>%s</td> </tr>
+		</table>>
+		shape=plain
+	]
+`
+	dot_policy_template = `	policy_%s_%s [
+		fillcolor="#00ccaa22"
+		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+			<tr> <td> <b>%s</b><br/>%s/%s</td> </tr>
 			<tr> <td>%s</td> </tr>
 		</table>>
 		shape=plain
@@ -167,28 +176,30 @@ func main() {
 	err = cl.List(context.TODO(), ingressList, client.InNamespace(""))
 
 	// Attached Policies, see https://gateway-api.sigs.k8s.io/geps/gep-713
+	attachedPolicies := []unstructured.Unstructured{}
 	crdResource := schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
 	labSel, _ := labels.Parse("gateway.networking.k8s.io/policy=true")
 	crdDefList, err := dcl.Resource(crdResource).List(context.TODO(), metav1.ListOptions{LabelSelector: labSel.String()})
 	if err != nil {
 		log.Fatalf("Cannot list CRDs: %v", err)
 	}
-	fmt.Printf("Found %d CRDs\n", len(crdDefList.Items))
+	//fmt.Printf("Found %d CRDs\n", len(crdDefList.Items))
 	for _, crd := range crdDefList.Items {
 		gvr, _ := crd2gvr(cl, &crd)
-		fmt.Printf("  %s: %+v\n", crd.GetName(), gvr)
+		//fmt.Printf("  %s: %+v\n", crd.GetName(), gvr)
 		crdList, err := dcl.Resource(*gvr).List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
 			log.Fatalf("Cannot list CRD %v: %v", gvr, err)
 		}
-		fmt.Printf("Found %d CRD instances\n", len(crdList.Items))
+		//fmt.Printf("Found %d CRD instances\n", len(crdList.Items))
 		for _, crdInst := range crdList.Items {
-			fmt.Printf("  %s/%s\n", crdInst.GetNamespace(), crdInst.GetName())
-			targetRef, found, err := unstructured.NestedMap(crdInst.Object, "spec", "targetRef")
+			//fmt.Printf("  %s/%s\n", crdInst.GetNamespace(), crdInst.GetName())
+			_, found, err := unstructured.NestedMap(crdInst.Object, "spec", "targetRef")
 			if err != nil || !found {
 				log.Fatalf("Missing or invalid targetRef, not a valid attached policy: %s/%s", crdInst.GetNamespace(), crdInst.GetName())
 			}
-			fmt.Printf("  targetRef: %+v\n", targetRef)
+			attachedPolicies = append(attachedPolicies, crdInst)
+			//fmt.Printf("  targetRef: %+v\n", targetRef)
 		}
 	}
 
@@ -250,20 +261,25 @@ func main() {
 	for _, rt := range httpRtList.Items {
 		for _, rules := range rt.Spec.Rules {
 			for _, backend := range rules.BackendRefs {
-				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace)), backend.Name, "? endpoint(s)")
+				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Kind, "Service"), Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace)), backend.Name, "? endpoint(s)")
 			}
 		}
 	}
 	fmt.Print("\t}\n")
 
+	// Nodes, attached policies
+	for _, policy := range attachedPolicies {
+		fmt.Printf(dot_policy_template, strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), policy.GetKind(), policy.GetNamespace(), policy.GetName(), "-")
+	}
+
 	// Edges
 	for _, gwc := range gwcList.Items {
 		if gwc.Spec.ParametersRef != nil {
-			fmt.Printf("\tgwc_%s -> gwcp_%s\n", strings.ReplaceAll(string(gwc.ObjectMeta.Name), "-", "_"), strings.ReplaceAll(gwc.Spec.ParametersRef.Name, "-", "_"))
+			fmt.Printf("\tGatewayClass_%s -> gwcp_%s\n", strings.ReplaceAll(string(gwc.ObjectMeta.Name), "-", "_"), strings.ReplaceAll(gwc.Spec.ParametersRef.Name, "-", "_"))
 		}
 	}
 	for _, gw := range gwList.Items {
-		fmt.Printf("	gw_%s_%s -> gwc_%s\n", strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(string(gw.Spec.GatewayClassName), "-", "_"))
+		fmt.Printf("	Gateway_%s_%s -> GatewayClass_%s\n", strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(string(gw.Spec.GatewayClassName), "-", "_"))
 	}
 	for _, rt := range httpRtList.Items {
 		for _, pref := range rt.Spec.ParentRefs {
@@ -272,14 +288,25 @@ func main() {
 				ns = string(*pref.Namespace)
 			}
 			if pref.Kind != nil && *pref.Kind == gatewayv1beta1.Kind("Gateway") {
-				fmt.Printf("	httproute_%s_%s -> gw_%s_%s\n", strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
+				fmt.Printf("	HTTPRoute_%s_%s -> Gateway_%s_%s\n", strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
 			}
 		}
 		for _, rules := range rt.Spec.Rules {
 			for _, backend := range rules.BackendRefs {
-				fmt.Printf("	backend_%s_%s -> httproute_%s_%s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"))
+				fmt.Printf("	backend_%s_%s -> HTTPRoute_%s_%s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"))
 			}
 		}
+	}
+	// Edges, attached policies
+	for _, policy := range attachedPolicies {
+		targetRef, _, _ := unstructured.NestedMap(policy.Object, "spec", "targetRef")
+		kind, _, _ := unstructured.NestedString(targetRef, "kind")
+		name, _, _ := unstructured.NestedString(targetRef, "name")
+		namespace, found, _ := unstructured.NestedString(targetRef, "namespace")
+		if !found {
+			namespace = policy.GetNamespace()
+		}
+		fmt.Printf("\tpolicy_%s_%s -> %s_%s_%s\n", strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), kind, strings.ReplaceAll(namespace, "-", "_"), strings.ReplaceAll(name, "-", "_"))
 	}
 	fmt.Print(dot_graph_template_footer)
 
