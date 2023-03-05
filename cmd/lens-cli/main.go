@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	//"text/tabwriter"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -17,6 +18,7 @@ import (
 	//"k8s.io/apimachinery/pkg/api/errors"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -36,7 +38,8 @@ import (
 	// _ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 
 	client "sigs.k8s.io/controller-runtime/pkg/client"
-	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+	gatewayv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 	"github.com/michaelvl/gateway-api-lens/pkg/version"
 )
 
@@ -132,11 +135,36 @@ digraph gatewayapi_config {
 	dot_cluster_template = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
 )
 
+type State struct {
+	cl                client.Client
+	dcl               *dynamic.DynamicClient
+	gwcList           *gatewayv1b1.GatewayClassList
+	gwList            *gatewayv1b1.GatewayList
+	httpRtList        *gatewayv1b1.HTTPRouteList
+	ingressList       *networkingv1.IngressList
+	attachedPolicies  []unstructured.Unstructured
+	//attachedPolicies  []Policy
+}
+
+// Processed resources
+type Policy struct {
+	// The unprocessed resource
+	r unstructured.Unstructured
+
+	// Whether the policy CRD is namespaced
+	isNamespaced bool
+	// Whether the target is namespaced
+	targetIsNamespaced bool
+
+	// A unique resource ID from a combination of kind, namespace (if applicable) and resource name
+	id string
+}
+
 func main() {
 	log.Printf("version: %s\n", version.Version)
 
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(gatewayv1beta1.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1b1.AddToScheme(scheme))
 	utilruntime.Must(apiextensions.AddToScheme(scheme))
 
 	var kubeconfig *string
@@ -163,13 +191,13 @@ func main() {
 	})
 	dcl := dynamic.NewForConfigOrDie(config)
 
-	gwcList := &gatewayv1beta1.GatewayClassList{}
+	gwcList := &gatewayv1b1.GatewayClassList{}
 	err = cl.List(context.TODO(), gwcList, client.InNamespace(""))
 
-	gwList := &gatewayv1beta1.GatewayList{}
+	gwList := &gatewayv1b1.GatewayList{}
 	err = cl.List(context.TODO(), gwList, client.InNamespace(""))
 
-	httpRtList := &gatewayv1beta1.HTTPRouteList{}
+	httpRtList := &gatewayv1b1.HTTPRouteList{}
 	err = cl.List(context.TODO(), httpRtList, client.InNamespace(""))
 
 	ingressList := &networkingv1.IngressList{}
@@ -183,34 +211,43 @@ func main() {
 	if err != nil {
 		log.Fatalf("Cannot list CRDs: %v", err)
 	}
-	//fmt.Printf("Found %d CRDs\n", len(crdDefList.Items))
 	for _, crd := range crdDefList.Items {
 		gvr, _ := crd2gvr(cl, &crd)
-		//fmt.Printf("  %s: %+v\n", crd.GetName(), gvr)
 		crdList, err := dcl.Resource(*gvr).List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
 			log.Fatalf("Cannot list CRD %v: %v", gvr, err)
 		}
-		//fmt.Printf("Found %d CRD instances\n", len(crdList.Items))
 		for _, crdInst := range crdList.Items {
-			//fmt.Printf("  %s/%s\n", crdInst.GetNamespace(), crdInst.GetName())
 			_, found, err := unstructured.NestedMap(crdInst.Object, "spec", "targetRef")
 			if err != nil || !found {
-				log.Fatalf("Missing or invalid targetRef, not a valid attached policy: %s/%s", crdInst.GetNamespace(), crdInst.GetName())
+				log.Printf("Missing or invalid targetRef, not a valid attached policy: %s/%s", crdInst.GetNamespace(), crdInst.GetName())
+			} else {
+				attachedPolicies = append(attachedPolicies, crdInst)
 			}
-			attachedPolicies = append(attachedPolicies, crdInst)
-			//fmt.Printf("  targetRef: %+v\n", targetRef)
 		}
 	}
 
 	//svcList := &corev1.ServiceList{}
 	//err = cl.List(context.TODO(), svcList, client.InNamespace(""))
 
+	// Pre-process resources - common processing to make output functions simpler
+
+	
+
+	state := State{cl, dcl, gwcList, gwList, httpRtList, ingressList, attachedPolicies}
+
+	outputDotGraph(&state)
+	//outputTxtTableGatewayFocus(&state)
+	//outputTxtClassHierarchy(&state)
+}
+
+func outputDotGraph(s *State) {
+
 	fmt.Print(dot_graph_template_header)
 
 	// Nodes, GatewayClasses and parameters
 	fmt.Printf(dot_cluster_template, "cluster_gwc")
-	for _, gwc := range gwcList.Items {
+	for _, gwc := range s.gwcList.Items {
 		var params string = fmt.Sprintf("Controller:<br/>%s", gwc.Spec.ControllerName)
 		fmt.Printf(dot_gatewayclass_template, strings.ReplaceAll(gwc.ObjectMeta.Name, "-", "_"), gwc.ObjectMeta.Name, params)
 		if gwc.Spec.ParametersRef != nil {
@@ -221,7 +258,7 @@ func main() {
 
 	// Nodes, Gateways
 	fmt.Printf(dot_cluster_template, "cluster_gw")
-	for _, gw := range gwList.Items {
+	for _, gw := range s.gwList.Items {
 		var params string
 		for idx, l := range gw.Spec.Listeners {
 			if idx > 0 {
@@ -240,7 +277,7 @@ func main() {
 
 	// Nodes, HTTPRoutes
 	fmt.Printf(dot_cluster_template, "cluster_httproute")
-	for _, rt := range httpRtList.Items {
+	for _, rt := range s.httpRtList.Items {
 		var params string
 		if rt.Spec.Hostnames != nil {
 			for idx, hname := range rt.Spec.Hostnames {
@@ -258,82 +295,93 @@ func main() {
 
 	// Nodes, backends
 	fmt.Printf(dot_cluster_template, "cluster_backends")
-	for _, rt := range httpRtList.Items {
+	for _, rt := range s.httpRtList.Items {
 		for _, rules := range rt.Spec.Rules {
 			for _, backend := range rules.BackendRefs {
-				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Kind, "Service"), Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace)), backend.Name, "? endpoint(s)")
+				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Kind, "Service"), Deref(backend.Namespace, gatewayv1b1.Namespace(rt.ObjectMeta.Namespace)), backend.Name, "? endpoint(s)")
 			}
 		}
 	}
 	fmt.Print("\t}\n")
 
 	// Nodes, attached policies
-	for _, policy := range attachedPolicies {
+	for _, policy := range s.attachedPolicies {
 		gv, _ := schema.ParseGroupVersion(policy.GetAPIVersion())
 		fmt.Printf(dot_policy_template, strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), gv.Group, policy.GetKind(), policy.GetNamespace(), policy.GetName(), "-")
 	}
 
 	// Edges
-	for _, gwc := range gwcList.Items {
+	for _, gwc := range s.gwcList.Items {
 		if gwc.Spec.ParametersRef != nil {
 			fmt.Printf("\tGatewayClass_%s -> gwcp_%s\n", strings.ReplaceAll(string(gwc.ObjectMeta.Name), "-", "_"), strings.ReplaceAll(gwc.Spec.ParametersRef.Name, "-", "_"))
 		}
 	}
-	for _, gw := range gwList.Items {
+	for _, gw := range s.gwList.Items {
 		fmt.Printf("	Gateway_%s_%s -> GatewayClass_%s\n", strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(string(gw.Spec.GatewayClassName), "-", "_"))
 	}
-	for _, rt := range httpRtList.Items {
+	for _, rt := range s.httpRtList.Items {
 		for _, pref := range rt.Spec.ParentRefs {
 			ns := rt.ObjectMeta.Namespace
 			if pref.Namespace != nil {
 				ns = string(*pref.Namespace)
 			}
-			if pref.Kind != nil && *pref.Kind == gatewayv1beta1.Kind("Gateway") {
+			if pref.Kind != nil && *pref.Kind == gatewayv1b1.Kind("Gateway") {
 				fmt.Printf("	HTTPRoute_%s_%s -> Gateway_%s_%s\n", strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
 			}
 		}
 		for _, rules := range rt.Spec.Rules {
 			for _, backend := range rules.BackendRefs {
-				fmt.Printf("	backend_%s_%s -> HTTPRoute_%s_%s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1beta1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"))
+				fmt.Printf("	backend_%s_%s -> HTTPRoute_%s_%s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"))
 			}
 		}
 	}
 	// Edges, attached policies
-	for _, policy := range attachedPolicies {
-		targetRef, _, _ := unstructured.NestedMap(policy.Object, "spec", "targetRef")
-		kind, _, _ := unstructured.NestedString(targetRef, "kind")
-		name, _, _ := unstructured.NestedString(targetRef, "name")
-		namespace, found, _ := unstructured.NestedString(targetRef, "namespace")
-		if !found {
-			namespace = policy.GetNamespace()
+	for _, policy := range s.attachedPolicies {
+		targetRef, err := unstructured2TargetRef(policy)
+		if err != nil {
+			log.Fatalf("Cannot convert policy to targetRef: %w", err)
 		}
-		fmt.Printf("\tpolicy_%s_%s -> %s_%s_%s\n", strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), kind, strings.ReplaceAll(namespace, "-", "_"), strings.ReplaceAll(name, "-", "_"))
+		isNamespaced, err := isNamespacedTargetRef(s.cl, targetRef)
+		if err != nil {
+			log.Fatalf("Cannot lookup namespace scope for targetRef %+v, policy %+v", targetRef, policy)
+		}
+		if isNamespaced {
+			fmt.Printf("\tpolicy_%s_%s -> %s_%s_%s\n", strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), targetRef.Kind, strings.ReplaceAll(string(*targetRef.Namespace), "-", "_"), strings.ReplaceAll(string(targetRef.Name), "-", "_"))
+		} else {
+			fmt.Printf("\tpolicy_%s_%s -> %s_%s\n", strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), targetRef.Kind, strings.ReplaceAll(string(targetRef.Name), "-", "_"))
+		}
 	}
 	fmt.Print(dot_graph_template_footer)
+}
 
-	// for _, gwc := range gwcList.Items {
-	// 	fmt.Printf("GatewayClass %s (controller:%s)\n", gwc.ObjectMeta.Name, gwc.Spec.ControllerName)
-	// 	for _, gw := range gwList.Items {
-	// 		if string(gw.Spec.GatewayClassName) != gwc.ObjectMeta.Name {
-	// 			continue
-	// 		}
-	// 		fmt.Printf("  Gateway %s/%s:", gw.ObjectMeta.Namespace, gw.ObjectMeta.Name)
-	// 		for _, l := range gw.Spec.Listeners {
-	// 			fmt.Printf(" %s:%s/%v", l.Name, l.Protocol, l.Port)
-	// 			if l.Hostname != nil {
-	// 				fmt.Printf(" %s", *l.Hostname)
-	// 			}
-	// 		}
-	// 		fmt.Printf("\n")
-	// 		for _, rt := range httpRtList.Items {
-	// 			for _, pref := range rt.Spec.ParentRefs {
-	// 				if IsRefToGateway(pref, NamespacedNameOf(&gw)) {
-	// 					fmt.Printf("    HTTPRoute %s/%s\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	// }
+func outputTxtTableGatewayFocus(s *State) {
+}
+
+// Hierarchy with GatewayClass at the top
+func outputTxtClassHierarchy(s *State) {
+	for _, gwc := range s.gwcList.Items {
+		fmt.Printf("GatewayClass %s (controller:%s)\n", gwc.ObjectMeta.Name, gwc.Spec.ControllerName)
+		for _, gw := range s.gwList.Items {
+			if string(gw.Spec.GatewayClassName) != gwc.ObjectMeta.Name {
+				continue
+			}
+			fmt.Printf("  Gateway %s/%s:", gw.ObjectMeta.Namespace, gw.ObjectMeta.Name)
+			for _, l := range gw.Spec.Listeners {
+				fmt.Printf(" %s:%s/%v", l.Name, l.Protocol, l.Port)
+				if l.Hostname != nil {
+					fmt.Printf(" %s", *l.Hostname)
+				}
+			}
+			fmt.Printf("\n")
+			for _, rt := range s.httpRtList.Items {
+				for _, pref := range rt.Spec.ParentRefs {
+					if IsRefToGateway(pref, NamespacedNameOf(&gw)) {
+						fmt.Printf("    HTTPRoute %s/%s\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
+					}
+				}
+			}
+		}
+	}
 }
 
 func Deref[T any](ptr *T, deflt T) T {
@@ -343,8 +391,42 @@ func Deref[T any](ptr *T, deflt T) T {
 	return deflt
 }
 
-func IsRefToGateway(parentRef gatewayv1beta1.ParentReference, gateway types.NamespacedName) bool {
-	if parentRef.Group != nil && string(*parentRef.Group) != gatewayv1beta1.GroupName {
+func PtrTo[T any](val T) *T {
+	return &val
+}
+
+func unstructured2TargetRef(us unstructured.Unstructured) (*gatewayv1a2.PolicyTargetReference, error) {
+
+	targetRef, found, err := unstructured.NestedMap(us.Object, "spec", "targetRef");
+	if !found || err!=nil {
+		return nil, err
+	}
+	group, found, err := unstructured.NestedString(targetRef, "group");
+	if !found || err!=nil {
+		return nil, err
+	}
+	kind, found, err := unstructured.NestedString(targetRef, "kind");
+	if !found || err!=nil {
+		return nil, err
+	}
+	name, found, err := unstructured.NestedString(targetRef, "name");
+	if !found || err!=nil {
+		return nil, err
+	}
+
+	tRef := gatewayv1a2.PolicyTargetReference{Group: gatewayv1a2.Group(group), Kind: gatewayv1a2.Kind(kind), Name: gatewayv1a2.ObjectName(name)}
+
+	namespace, found, _ := unstructured.NestedString(targetRef, "namespace")
+	if !found {
+		namespace = us.GetNamespace() // Defaults to namespace of policy
+	}
+	tRef.Namespace = PtrTo(gatewayv1a2.Namespace(namespace))
+
+	return &tRef, nil
+}
+
+func IsRefToGateway(parentRef gatewayv1b1.ParentReference, gateway types.NamespacedName) bool {
+	if parentRef.Group != nil && string(*parentRef.Group) != gatewayv1b1.GroupName {
 		return false
 	}
 
@@ -370,6 +452,19 @@ func NamespacedNameOf(obj metav1.Object) types.NamespacedName {
 	}
 
 	return name
+}
+
+// Return true if targetref is to a namespaced resource
+func isNamespacedTargetRef(cl client.Client, tRef *gatewayv1a2.PolicyTargetReference) (bool, error) {
+	gk := schema.GroupKind{
+		Group: string(tRef.Group),
+		Kind:  string(tRef.Kind),
+	}
+	mapping, err := cl.RESTMapper().RESTMapping(gk)
+	if err != nil {
+		return false, err
+	}
+	return mapping.Scope.Name() ==  meta.RESTScopeNameNamespace, nil
 }
 
 // Lookup GVR for CRD in unstructured.Unstructured
