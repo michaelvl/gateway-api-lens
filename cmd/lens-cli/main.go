@@ -123,10 +123,10 @@ digraph gatewayapi_config {
 		shape=plain
 	]
 `
-	dot_policy_template = `	policy_%s_%s [
+	dot_policy_template = `	policy_%s [
 		fillcolor="#00ccaa22"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>%s/%s</b><br/>%s/%s</td> </tr>
+			<tr> <td> <b>%s</b><br/>%s</td> </tr>
 			<tr> <td>%s</td> </tr>
 		</table>>
 		shape=plain
@@ -142,22 +142,34 @@ type State struct {
 	gwList            *gatewayv1b1.GatewayList
 	httpRtList        *gatewayv1b1.HTTPRouteList
 	ingressList       *networkingv1.IngressList
-	attachedPolicies  []unstructured.Unstructured
-	//attachedPolicies  []Policy
+	//attachedPolicies  []unstructured.Unstructured
+	attachedPolicies  []Policy
 }
 
 // Processed resources
 type Policy struct {
 	// The unprocessed resource
-	r unstructured.Unstructured
+	raw unstructured.Unstructured
+
+	// Policy targetRef read from unstructured
+	targetRef *gatewayv1a2.PolicyTargetReference
 
 	// Whether the policy CRD is namespaced
 	isNamespaced bool
 	// Whether the target is namespaced
 	targetIsNamespaced bool
 
+	// group+kind separated by '/'
+	groupKind string
+
+	// 'Namespace/name' or 'Name' of policy resource, depending on whether policy CRD is namespaced or cluster scoped
+	namespacedName string
+
 	// A unique resource ID from a combination of kind, namespace (if applicable) and resource name
 	id string
+
+	// Unique target ID from a combination of kind, namespace (if applicable) and resource name
+	targetId string
 }
 
 func main() {
@@ -218,6 +230,7 @@ func main() {
 			log.Fatalf("Cannot list CRD %v: %v", gvr, err)
 		}
 		for _, crdInst := range crdList.Items {
+			// We only queue CRDs with a 'targetRef'. TODO: Check that CRD also have 'kind' etc. fields.
 			_, found, err := unstructured.NestedMap(crdInst.Object, "spec", "targetRef")
 			if err != nil || !found {
 				log.Printf("Missing or invalid targetRef, not a valid attached policy: %s/%s", crdInst.GetNamespace(), crdInst.GetName())
@@ -230,11 +243,45 @@ func main() {
 	//svcList := &corev1.ServiceList{}
 	//err = cl.List(context.TODO(), svcList, client.InNamespace(""))
 
+	state := State{cl, dcl, gwcList, gwList, httpRtList, ingressList, nil}
+
 	// Pre-process resources - common processing to make output functions simpler
 
-	
-
-	state := State{cl, dcl, gwcList, gwList, httpRtList, ingressList, attachedPolicies}
+	for _, policy := range attachedPolicies {
+		pol := Policy{}
+		pol.raw = policy
+		gvr, isNamespaced, err := unstructured2gvr(cl, &policy)
+		if err != nil {
+			log.Fatalf("Cannot lookup GVR of %+v: %w", policy, err)
+		}
+		pol.groupKind = fmt.Sprintf("%s/%s", gvr.Group, policy.GetKind())
+		pol.isNamespaced = isNamespaced
+		pol.targetRef, err = unstructured2TargetRef(policy)
+		if err != nil {
+			log.Fatalf("Cannot convert policy to targetRef: %w", err)
+		}
+		pol.targetIsNamespaced, err = isNamespacedTargetRef(cl, pol.targetRef)
+		if err != nil {
+			log.Fatalf("Cannot lookup namespace scope for targetRef %+v, policy %+v", pol.targetRef, policy)
+		}
+		if pol.targetIsNamespaced {
+			pol.targetId = fmt.Sprintf("%s_%s_%s", pol.targetRef.Kind,
+				strings.ReplaceAll(string(*pol.targetRef.Namespace), "-", "_"),
+				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
+		} else {
+			pol.targetId = fmt.Sprintf("%s_%s", pol.targetRef.Kind,
+				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
+		}
+		if isNamespaced {
+			pol.namespacedName = fmt.Sprintf("%s/%s", policy.GetNamespace(), policy.GetName())
+			pol.id = fmt.Sprintf("%s_%s_%s", policy.GetKind(), strings.ReplaceAll(policy.GetNamespace(), "-", "_"),
+				strings.ReplaceAll(policy.GetName(), "-", "_"))
+		} else {
+			pol.namespacedName = policy.GetName()
+			pol.id = fmt.Sprintf("%s_%s", policy.GetKind(), strings.ReplaceAll(policy.GetName(), "-", "_"))
+		}
+		state.attachedPolicies = append(state.attachedPolicies, pol)
+	}
 
 	outputDotGraph(&state)
 	//outputTxtTableGatewayFocus(&state)
@@ -306,8 +353,7 @@ func outputDotGraph(s *State) {
 
 	// Nodes, attached policies
 	for _, policy := range s.attachedPolicies {
-		gv, _ := schema.ParseGroupVersion(policy.GetAPIVersion())
-		fmt.Printf(dot_policy_template, strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), gv.Group, policy.GetKind(), policy.GetNamespace(), policy.GetName(), "-")
+		fmt.Printf(dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, "-")
 	}
 
 	// Edges
@@ -337,19 +383,7 @@ func outputDotGraph(s *State) {
 	}
 	// Edges, attached policies
 	for _, policy := range s.attachedPolicies {
-		targetRef, err := unstructured2TargetRef(policy)
-		if err != nil {
-			log.Fatalf("Cannot convert policy to targetRef: %w", err)
-		}
-		isNamespaced, err := isNamespacedTargetRef(s.cl, targetRef)
-		if err != nil {
-			log.Fatalf("Cannot lookup namespace scope for targetRef %+v, policy %+v", targetRef, policy)
-		}
-		if isNamespaced {
-			fmt.Printf("\tpolicy_%s_%s -> %s_%s_%s\n", strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), targetRef.Kind, strings.ReplaceAll(string(*targetRef.Namespace), "-", "_"), strings.ReplaceAll(string(targetRef.Name), "-", "_"))
-		} else {
-			fmt.Printf("\tpolicy_%s_%s -> %s_%s\n", strings.ReplaceAll(policy.GetNamespace(), "-", "_"), strings.ReplaceAll(policy.GetName(), "-", "_"), targetRef.Kind, strings.ReplaceAll(string(targetRef.Name), "-", "_"))
-		}
+		fmt.Printf("\tpolicy_%s -> %s\n", policy.id, policy.targetId)
 	}
 	fmt.Print(dot_graph_template_footer)
 }
@@ -467,6 +501,30 @@ func isNamespacedTargetRef(cl client.Client, tRef *gatewayv1a2.PolicyTargetRefer
 	return mapping.Scope.Name() ==  meta.RESTScopeNameNamespace, nil
 }
 
+// Lookup GVR for resource in unstructured.Unstructured
+func unstructured2gvr(cl client.Client, us *unstructured.Unstructured) (*schema.GroupVersionResource, bool, error) {
+	gv, err := schema.ParseGroupVersion(us.GetAPIVersion())
+	if err != nil {
+		return nil, false, err
+	}
+	gk := schema.GroupKind{
+		Group: gv.Group,
+		Kind:  us.GetKind(),
+	}
+	mapping, err := cl.RESTMapper().RESTMapping(gk, gv.Version)
+	if err != nil {
+		return nil, false, err
+	}
+
+	isNamespaced := mapping.Scope.Name() ==  meta.RESTScopeNameNamespace
+
+	return &schema.GroupVersionResource{
+		Group:	  gk.Group,
+		Version:  gv.Version,
+		Resource: mapping.Resource.Resource,
+	}, isNamespaced, nil
+}
+
 // Lookup GVR for CRD in unstructured.Unstructured
 func crd2gvr(cl client.Client, crd *unstructured.Unstructured) (*schema.GroupVersionResource, error) {
 	group, found, err := unstructured.NestedString(crd.Object, "spec", "group")
@@ -489,6 +547,7 @@ func crd2gvr(cl client.Client, crd *unstructured.Unstructured) (*schema.GroupVer
 	if err != nil {
 		return nil, err
 	}
+
 	return &schema.GroupVersionResource{
 		Group:	  group,
 		Version:  version,
