@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	//"text/tabwriter"
+	"text/tabwriter"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -151,22 +151,39 @@ type Policy struct {
 	// The unprocessed resource
 	raw unstructured.Unstructured
 
-	// Policy targetRef read from unstructured
-	targetRef *gatewayv1a2.PolicyTargetReference
-
 	// Whether the policy CRD is namespaced
 	isNamespaced bool
-	// Whether the target is namespaced
-	targetIsNamespaced bool
 
-	// group+kind separated by '/'
-	groupKind string
+	// Policy namespace
+	name string
+
+	// Policy kind/name
+	kindName string
+
+
+	// Policy namespace
+	namespace string
 
 	// 'Namespace/name' or 'Name' of policy resource, depending on whether policy CRD is namespaced or cluster scoped
 	namespacedName string
 
+	// group+kind separated by '/'
+	groupKind string
+
 	// A unique resource ID from a combination of kind, namespace (if applicable) and resource name
 	id string
+
+	// Policy targetRef read from unstructured
+	targetRef *gatewayv1a2.PolicyTargetReference
+
+	// Whether the target is namespaced
+	targetIsNamespaced bool
+
+	// 'Namespace/name' or 'Name' of target resource, depending on whether target is namespaced or cluster scoped
+	targetNamespacedName string
+
+	// 'Kind/Namespace/name' or 'Kind/Name' of target resource, depending on whether target is namespaced or cluster scoped
+	targetKindNamespacedName string
 
 	// Unique target ID from a combination of kind, namespace (if applicable) and resource name
 	targetId string
@@ -265,13 +282,19 @@ func main() {
 			log.Fatalf("Cannot lookup namespace scope for targetRef %+v, policy %+v", pol.targetRef, policy)
 		}
 		if pol.targetIsNamespaced {
+			pol.targetNamespacedName = fmt.Sprintf("%s/%s",  *pol.targetRef.Namespace, pol.targetRef.Name)
+			pol.targetKindNamespacedName = fmt.Sprintf("%s/%s/%s", pol.targetRef.Kind,  *pol.targetRef.Namespace, pol.targetRef.Name)
 			pol.targetId = fmt.Sprintf("%s_%s_%s", pol.targetRef.Kind,
 				strings.ReplaceAll(string(*pol.targetRef.Namespace), "-", "_"),
 				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
 		} else {
+			pol.targetNamespacedName = string(pol.targetRef.Name)
 			pol.targetId = fmt.Sprintf("%s_%s", pol.targetRef.Kind,
 				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
 		}
+		pol.name = policy.GetName()
+		pol.namespace = policy.GetNamespace()
+		pol.kindName = fmt.Sprintf("%s/%s", policy.GetKind(), policy.GetName())
 		if isNamespaced {
 			pol.namespacedName = fmt.Sprintf("%s/%s", policy.GetNamespace(), policy.GetName())
 			pol.id = fmt.Sprintf("%s_%s_%s", policy.GetKind(), strings.ReplaceAll(policy.GetNamespace(), "-", "_"),
@@ -283,9 +306,10 @@ func main() {
 		state.attachedPolicies = append(state.attachedPolicies, pol)
 	}
 
-	outputDotGraph(&state)
+	//outputDotGraph(&state)
 	//outputTxtTableGatewayFocus(&state)
 	//outputTxtClassHierarchy(&state)
+	outputTxtTablePolicyFocus(&state)
 }
 
 func outputDotGraph(s *State) {
@@ -389,6 +413,30 @@ func outputDotGraph(s *State) {
 }
 
 func outputTxtTableGatewayFocus(s *State) {
+}
+
+func outputTxtTablePolicyFocus(s *State) {
+	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
+	fmt.Fprintln(t, "NAMESPACE\tPOLICY\tTARGET\tDEFAULT\tOVERRIDE")
+	for _, policy := range s.attachedPolicies {
+		// Does the policy have 'default' or 'override' settings
+		def := "No"
+		override := "No"
+		_, defFound, _ := unstructured.NestedMap(policy.raw.Object, "spec", "default");
+		_, overrideFound, _ := unstructured.NestedMap(policy.raw.Object, "spec", "override");
+		if defFound {
+			def = "Yes"
+		}
+		if overrideFound {
+			override = "Yes"
+		}
+		if policy.isNamespaced {
+			fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", policy.namespace, policy.kindName, policy.targetKindNamespacedName, def, override)
+		} else {
+			fmt.Fprintf(t, "\t%s\t%s\t%s\t%s\n", policy.kindName, policy.targetKindNamespacedName, def, override)
+		}
+	}
+	t.Flush()
 }
 
 // Hierarchy with GatewayClass at the top
