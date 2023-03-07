@@ -291,6 +291,7 @@ func main() {
 				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
 		} else {
 			pol.targetNamespacedName = string(pol.targetRef.Name)
+			pol.targetKindNamespacedName = fmt.Sprintf("%s/%s", pol.targetRef.Kind, pol.targetRef.Name)
 			pol.targetId = fmt.Sprintf("%s_%s", pol.targetRef.Kind,
 				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
 		}

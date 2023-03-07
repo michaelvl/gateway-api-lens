@@ -3,8 +3,42 @@
 **Gateway API Lens** is a tool to visualize [Kubernetes Gateway
 API](https://gateway-api.sigs.k8s.i) configuration.
 
-Usage:
+The following example from
+[gateway-API](https://gateway-api.sigs.k8s.io) will be used to
+illustrate the different outputs generated:
+
+![Gateway-API example](doc/images/gateway-roles.png)
+
+# Graphviz Graph Output
 
 ```bash
-bin/linux_amd64/lens-cli  |  dot -Tsvg > output.svg
+$ bin/linux_amd64/lens-cli -o graph  |  dot -Tsvg > output.svg
+```
+
+The is an example where service policies (see
+[GEP-713](https://gateway-api.sigs.k8s.io/geps/gep-713)) are attached
+to both `GatewayClass` and `Gateway` resources:
+
+![Example Graphviz output](doc/images/graphviz-output.png)
+
+# Policies in Table Format
+
+```bash
+$ bin/linux_amd64/lens-cli -o policy
+
+NAMESPACE POLICY                                                   TARGET                        DEFAULT OVERRIDE
+          ACMEClusterServicePolicy/acmeclusterservicepolicy-sample GatewayClass/cloud-gw         No      Yes
+foo-infra ACMEServicePolicy/acmeservicepolicy-sample               Gateway/foo-infra/foo-gateway Yes     No
+foo-infra ACMEServicePolicy/acmeservicepolicy-sample2              GatewayClass/cloud-gw         Yes     No
+```
+
+# GatewayClass/Gateway/HTTPRoute Hierarchy Format
+
+```bash
+$ bin/linux_amd64/lens-cli -o gatewayclass-hierarchy
+
+GatewayClass cloud-gw (controller:github.com/pixelperfekt-dk/cloud-gateway-controller)
+  Gateway foo-infra/foo-gateway: web:HTTP/80 foo.example.com
+    HTTPRoute foo-site/foo-site
+    HTTPRoute foo-store/foo-store
 ```
