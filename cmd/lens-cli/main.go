@@ -197,11 +197,13 @@ func main() {
 	utilruntime.Must(apiextensions.AddToScheme(scheme))
 
 	var kubeconfig *string
+	var outputFormat *string
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
 	} else {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
+	outputFormat = flag.String("o", "policy", "output format [policy|graph|gatewayclass-hierarchy]")
 	flag.Parse()
 
 	config, err := rest.InClusterConfig()
@@ -306,10 +308,15 @@ func main() {
 		state.attachedPolicies = append(state.attachedPolicies, pol)
 	}
 
-	//outputDotGraph(&state)
+	switch *outputFormat {
+	case "policy":
+		outputTxtTablePolicyFocus(&state)
+	case "graph":
+		outputDotGraph(&state)
+	case "gatewayclass-hierarchy":
+		outputTxtClassHierarchy(&state)
 	//outputTxtTableGatewayFocus(&state)
-	//outputTxtClassHierarchy(&state)
-	outputTxtTablePolicyFocus(&state)
+	}
 }
 
 func outputDotGraph(s *State) {
