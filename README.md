@@ -32,13 +32,18 @@ foo-infra ACMEServicePolicy/acmeservicepolicy-sample               Gateway/foo-i
 foo-infra ACMEServicePolicy/acmeservicepolicy-sample2              GatewayClass/cloud-gw         Yes     No
 ```
 
-# GatewayClass/Gateway/HTTPRoute Hierarchy Format
+# Hierarchy Format
 
 ```bash
 $ bin/linux_amd64/lens-cli -o gatewayclass-hierarchy
 
-GatewayClass cloud-gw (controller:github.com/pixelperfekt-dk/cloud-gateway-controller)
-  Gateway foo-infra/foo-gateway: web:HTTP/80 foo.example.com
-    HTTPRoute foo-site/foo-site
-    HTTPRoute foo-store/foo-store
+RESOURCE                              CONFIGURATION
+GatewayClass cloud-gw
+ └─ Gateway foo-infra/foo-gateway     web:HTTP/80 foo.example.com
+     ├─ HTTPRoute foo-site/foo-site
+     │   ├─ match                     PathPrefix /site
+     │   └─ backends                  Service/foo-site/foo-site:80@1
+     └─ HTTPRoute foo-store/foo-store
+         ├─ match                     PathPrefix /store
+         └─ backends                  Service/foo-store-v1:80@90 Service/foo-store-v2:80@10
 ```

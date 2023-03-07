@@ -449,29 +449,45 @@ func outputTxtTablePolicyFocus(s *State) {
 
 // Hierarchy with GatewayClass at the top
 func outputTxtClassHierarchy(s *State) {
+	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
+	fmt.Fprintln(t, "RESOURCE\tCONFIGURATION")
 	for _, gwc := range s.gwcList.Items {
-		fmt.Printf("GatewayClass %s (controller:%s)\n", gwc.ObjectMeta.Name, gwc.Spec.ControllerName)
+		fmt.Fprintf(t, "GatewayClass %s\t\n", gwc.ObjectMeta.Name)
 		for _, gw := range s.gwList.Items {
 			if string(gw.Spec.GatewayClassName) != gwc.ObjectMeta.Name {
 				continue
 			}
-			fmt.Printf("  Gateway %s/%s:", gw.ObjectMeta.Namespace, gw.ObjectMeta.Name)
+			fmt.Fprintf(t, " ├─ Gateway %s/%s\t", gw.ObjectMeta.Namespace, gw.ObjectMeta.Name)
 			for _, l := range gw.Spec.Listeners {
-				fmt.Printf(" %s:%s/%v", l.Name, l.Protocol, l.Port)
+				fmt.Fprintf(t, "%s:%s/%v ", l.Name, l.Protocol, l.Port)
 				if l.Hostname != nil {
-					fmt.Printf(" %s", *l.Hostname)
+					fmt.Fprintf(t, "%s ", *l.Hostname)
 				}
 			}
-			fmt.Printf("\n")
+			fmt.Fprintf(t, "\n")
 			for _, rt := range s.httpRtList.Items {
 				for _, pref := range rt.Spec.ParentRefs {
 					if IsRefToGateway(pref, NamespacedNameOf(&gw)) {
-						fmt.Printf("    HTTPRoute %s/%s\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
+						fmt.Fprintf(t, "     ├─ HTTPRoute %s/%s\t\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
+						for _,rule := range rt.Spec.Rules {
+							fmt.Fprintf(t, "     │   ├─ match\t")
+							for _,match := range rule.Matches {
+								fmt.Fprintf(t, "%s %s ", *match.Path.Type, *match.Path.Value)
+							}
+							fmt.Fprintf(t, "\n")
+							fmt.Fprintf(t, "     │   ├─ backends\t")
+							for _,be := range rule.BackendRefs {
+								fmt.Fprintf(t, "%s ", backendRef2String(&be.BackendRef))
+							}
+							fmt.Fprintf(t, "\n")
+						}
+						break // Only one parent ref for each gw
 					}
 				}
 			}
 		}
 	}
+	t.Flush()
 }
 
 func Deref[T any](ptr *T, deflt T) T {
@@ -529,6 +545,24 @@ func IsRefToGateway(parentRef gatewayv1b1.ParentReference, gateway types.Namespa
 	}
 
 	return string(parentRef.Name) == gateway.Name
+}
+
+func backendRef2String(be *gatewayv1b1.BackendRef) string {
+	beo := be.BackendObjectReference
+	out := string(beo.Name)
+	if beo.Namespace != nil {
+		out = fmt.Sprintf("%s/%s", *beo.Namespace, out)
+	}
+	if beo.Kind != nil {
+		out = fmt.Sprintf("%s/%s", *beo.Kind, out)
+	}
+	if beo.Port != nil {
+		out = fmt.Sprintf("%s:%v", out, *beo.Port)
+	}
+	if be.Weight != nil {
+		out = fmt.Sprintf("%s@%v", out, *be.Weight)
+	}
+	return out
 }
 
 func NamespacedNameOf(obj metav1.Object) types.NamespacedName {
