@@ -24,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	//"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
@@ -99,10 +98,11 @@ digraph gatewayapi_config {
 		shape=plain
 	]
 `
-	dot_gateway_template = `	Gateway_%s_%s [
+	// Args: id, namespacedName, body
+	dot_gateway_template = `	%s [
 		fillcolor="#ff880022"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>Gateway</b><br/>%s/%s</td> </tr>
+			<tr> <td> <b>Gateway</b><br/>%s</td> </tr>
 			<tr> <td>%s</td> </tr>
 		</table>>
 		shape=plain
@@ -142,8 +142,7 @@ type State struct {
 	cl                client.Client
 	dcl               *dynamic.DynamicClient
 	gwcList           []GatewayClass
-	//gwcList           *gatewayv1b1.GatewayClassList
-	gwList            *gatewayv1b1.GatewayList
+	gwList            []Gateway
 	httpRtList        *gatewayv1b1.HTTPRouteList
 	ingressList       *networkingv1.IngressList
 	//attachedPolicies  []unstructured.Unstructured
@@ -184,6 +183,16 @@ type GatewayClass struct {
 
 	// The unprocessed resource
 	raw *gatewayv1b1.GatewayClass
+}
+
+// Processed information for Gateway resources
+type Gateway struct {
+	CommonObjRef
+
+	class *GatewayClass
+
+	// The unprocessed resource
+	raw *gatewayv1b1.Gateway
 }
 
 // Processed information for policy resources
@@ -291,7 +300,7 @@ func main() {
 	//svcList := &corev1.ServiceList{}
 	//err = cl.List(context.TODO(), svcList, client.InNamespace(""))
 
-	state := State{cl, dcl, nil, gwList, httpRtList, ingressList, nil}
+	state := State{cl, dcl, nil, nil, httpRtList, ingressList, nil}
 
 	//
 	// Pre-process resources - common processing to make output
@@ -320,6 +329,16 @@ func main() {
 		}
 		state.gwcList = append(state.gwcList, gwclass)
 	}
+
+	// Pre-process Gateway resources
+	for _, gw := range gwList.Items {
+		g := Gateway{}
+		commonPreProc(&g.CommonObjRef, &gw, true)
+		g.raw = &gw
+		g.class = state.gatewayclassByName(string(gw.Spec.GatewayClassName))
+		state.gwList = append(state.gwList, g)
+	}
+
 
 	// Pre-process policy resource
 	for _, policy := range attachedPolicies {
@@ -379,8 +398,11 @@ func main() {
 }
 
 func commonPreProc(c *CommonObjRef, obj KubeObj, isNamespaced bool) {
-	c.isNamespaced = isNamespaced
 	c.name = obj.GetName()
+	c.isNamespaced = isNamespaced
+	if isNamespaced {
+		c.namespace = obj.GetNamespace()
+	}
 	objkind := obj.GetObjectKind()
 	c.kind = objkind.GroupVersionKind().Kind
 	c.group = objkind.GroupVersionKind().Group
@@ -397,6 +419,15 @@ func commonObjRefPreProc(c *CommonObjRef) {
 		c.namespacedName = c.name
 		c.id = strings.ReplaceAll(fmt.Sprintf("%s_%s", c.kind, c.name), "-", "_")
 	}
+}
+
+func (s *State) gatewayclassByName(name string) *GatewayClass {
+	for _, gwc := range s.gwcList {
+		if gwc.name == name {
+			return &gwc
+		}
+	}
+	return nil
 }
 
 func outputDotGraph(s *State) {
@@ -417,9 +448,9 @@ func outputDotGraph(s *State) {
 
 	// Nodes, Gateways
 	fmt.Printf(dot_cluster_template, "cluster_gw")
-	for _, gw := range s.gwList.Items {
+	for _, gw := range s.gwList {
 		var params string
-		for idx, l := range gw.Spec.Listeners {
+		for idx, l := range gw.raw.Spec.Listeners {
 			if idx > 0 {
 				params += "<br/>"
 			}
@@ -430,7 +461,7 @@ func outputDotGraph(s *State) {
 				params = "<br/><i>(no hostname)</i>"
 			}
 		}
-		fmt.Printf(dot_gateway_template, strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), gw.ObjectMeta.Namespace, gw.ObjectMeta.Name, params)
+		fmt.Printf(dot_gateway_template, gw.id, gw.namespacedName, params)
 	}
 	fmt.Print("\t}\n")
 
@@ -474,8 +505,8 @@ func outputDotGraph(s *State) {
 			fmt.Printf("\t%s -> %s\n", gwc.id, gwc.parameters.id)
 		}
 	}
-	for _, gw := range s.gwList.Items {
-		fmt.Printf("	Gateway_%s_%s -> GatewayClass_%s\n", strings.ReplaceAll(gw.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(gw.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(string(gw.Spec.GatewayClassName), "-", "_"))
+	for _, gw := range s.gwList {
+		fmt.Printf("	%s -> %s\n", gw.id, gw.class.id)
 	}
 	for _, rt := range s.httpRtList.Items {
 		for _, pref := range rt.Spec.ParentRefs {
@@ -533,12 +564,12 @@ func outputTxtClassHierarchy(s *State) {
 	fmt.Fprintln(t, "RESOURCE\tCONFIGURATION")
 	for _, gwc := range s.gwcList {
 		fmt.Fprintf(t, "GatewayClass %s\t\n", gwc.name)
-		for _, gw := range s.gwList.Items {
-			if string(gw.Spec.GatewayClassName) != gwc.name {
+		for _, gw := range s.gwList {
+			if gw.class.id == gwc.id {
 				continue
 			}
-			fmt.Fprintf(t, " ├─ Gateway %s/%s\t", gw.ObjectMeta.Namespace, gw.ObjectMeta.Name)
-			for _, l := range gw.Spec.Listeners {
+			fmt.Fprintf(t, " ├─ Gateway %s\t", gw.namespacedName)
+			for _, l := range gw.raw.Spec.Listeners {
 				fmt.Fprintf(t, "%s:%s/%v ", l.Name, l.Protocol, l.Port)
 				if l.Hostname != nil {
 					fmt.Fprintf(t, "%s ", *l.Hostname)
@@ -547,7 +578,7 @@ func outputTxtClassHierarchy(s *State) {
 			fmt.Fprintf(t, "\n")
 			for _, rt := range s.httpRtList.Items {
 				for _, pref := range rt.Spec.ParentRefs {
-					if IsRefToGateway(pref, NamespacedNameOf(&gw)) {
+					if IsRefToGateway(pref, gw) {
 						fmt.Fprintf(t, "     ├─ HTTPRoute %s/%s\t\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
 						for _,rule := range rt.Spec.Rules {
 							fmt.Fprintf(t, "     │   ├─ match\t")
@@ -574,8 +605,8 @@ func outputTxtClassHierarchy(s *State) {
 func outputTxtRouteTree(s *State) {
 	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
 	fmt.Fprintln(t, "HOSTNAME\tPROTOCOL\tPATH\tBACKEND")
-	for _, gw := range s.gwList.Items {
-		for _, l := range gw.Spec.Listeners {
+	for _, gw := range s.gwList {
+		for _, l := range gw.raw.Spec.Listeners {
 			if l.Hostname != nil {
 				fmt.Fprintf(t, "%s\t", *l.Hostname)
 			} else {
@@ -586,7 +617,7 @@ func outputTxtRouteTree(s *State) {
 		fmt.Fprintf(t, "\n")
 			// for _, rt := range s.httpRtList.Items {
 			// 	for _, pref := range rt.Spec.ParentRefs {
-			// 		if IsRefToGateway(pref, NamespacedNameOf(&gw)) {
+			// 		if IsRefToGateway(pref, gw) {
 			// 			fmt.Fprintf(t, "     ├─ HTTPRoute %s/%s\t\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
 			// 			for _,rule := range rt.Spec.Rules {
 			// 				fmt.Fprintf(t, "     │   ├─ match\t")
@@ -649,7 +680,7 @@ func unstructured2TargetRef(us unstructured.Unstructured) (*gatewayv1a2.PolicyTa
 	return &tRef, nil
 }
 
-func IsRefToGateway(parentRef gatewayv1b1.ParentReference, gateway types.NamespacedName) bool {
+func IsRefToGateway(parentRef gatewayv1b1.ParentReference, gateway Gateway) bool {
 	if parentRef.Group != nil && string(*parentRef.Group) != gatewayv1b1.GroupName {
 		return false
 	}
@@ -658,11 +689,11 @@ func IsRefToGateway(parentRef gatewayv1b1.ParentReference, gateway types.Namespa
 		return false
 	}
 
-	if parentRef.Namespace != nil && string(*parentRef.Namespace) != gateway.Namespace {
+	if parentRef.Namespace != nil && string(*parentRef.Namespace) != gateway.namespace {
 		return false
 	}
 
-	return string(parentRef.Name) == gateway.Name
+	return string(parentRef.Name) == gateway.name
 }
 
 func backendRef2String(be *gatewayv1b1.BackendRef) string {
@@ -683,18 +714,18 @@ func backendRef2String(be *gatewayv1b1.BackendRef) string {
 	return out
 }
 
-func NamespacedNameOf(obj metav1.Object) types.NamespacedName {
-	name := types.NamespacedName{
-		Name:	   obj.GetName(),
-		Namespace: obj.GetNamespace(),
-	}
+// func NamespacedNameOf(obj metav1.Object) types.NamespacedName {
+// 	name := types.NamespacedName{
+// 		Name:	   obj.GetName(),
+// 		Namespace: obj.GetNamespace(),
+// 	}
 
-	if name.Namespace == "" {
-		name.Namespace = metav1.NamespaceDefault
-	}
+// 	if name.Namespace == "" {
+// 		name.Namespace = metav1.NamespaceDefault
+// 	}
 
-	return name
-}
+// 	return name
+// }
 
 // Return true if targetref is to a namespaced resource
 func isNamespacedTargetRef(cl client.Client, tRef *gatewayv1a2.PolicyTargetReference) (bool, error) {
