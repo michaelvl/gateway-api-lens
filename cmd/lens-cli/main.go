@@ -565,7 +565,7 @@ func outputTxtClassHierarchy(s *State) {
 	for _, gwc := range s.gwcList {
 		fmt.Fprintf(t, "GatewayClass %s\t\n", gwc.name)
 		for _, gw := range s.gwList {
-			if gw.class.id == gwc.id {
+			if gw.class.id != gwc.id {
 				continue
 			}
 			fmt.Fprintf(t, " ├─ Gateway %s\t", gw.namespacedName)
