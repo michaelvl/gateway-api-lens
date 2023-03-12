@@ -35,7 +35,7 @@ foo-infra ACMEServicePolicy/acmeservicepolicy-sample2              GatewayClass/
 # Hierarchy Format
 
 ```bash
-$ bin/linux_amd64/lens-cli -o gatewayclass-hierarchy
+$ bin/linux_amd64/lens-cli -o hierarchy
 
 RESOURCE                              CONFIGURATION
 GatewayClass cloud-gw

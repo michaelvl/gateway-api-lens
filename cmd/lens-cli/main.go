@@ -78,7 +78,8 @@ digraph gatewayapi_config {
 `
 	dot_graph_template_footer string = `}
 `
-	dot_gatewayclass_template = `	GatewayClass_%s [
+	// Args: id, name, body
+	dot_gatewayclass_template = `	%s [
 		fillcolor="#0044ff22"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>GatewayClass</b><br/>%s</td> </tr>
@@ -87,7 +88,9 @@ digraph gatewayapi_config {
 		shape=plain
 	]
 `
-	dot_gatewayclassparams_template = `	gwcp_%s [
+
+	// Args: id, param group, param kind, param name, param body
+	dot_gatewayclassparams_template = `	%s [
 		fillcolor="#0033dd11"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>%s/%s</b><br/>%s</td> </tr>
@@ -138,7 +141,8 @@ digraph gatewayapi_config {
 type State struct {
 	cl                client.Client
 	dcl               *dynamic.DynamicClient
-	gwcList           *gatewayv1b1.GatewayClassList
+	gwcList           []GatewayClass
+	//gwcList           *gatewayv1b1.GatewayClassList
 	gwList            *gatewayv1b1.GatewayList
 	httpRtList        *gatewayv1b1.HTTPRouteList
 	ingressList       *networkingv1.IngressList
@@ -146,36 +150,51 @@ type State struct {
 	attachedPolicies  []Policy
 }
 
-// Processed resources
-type Policy struct {
+type CommonObjRef struct {
+	name           string
+	namespace      string
+	kind           string
+	group          string
+
+	// kind/name
+	kindName       string
+
+	// 'Namespace/name' or 'Name' of target resource, depending on whether target is namespaced or cluster scoped
+	namespacedName     string
+
+	// 'Kind/Namespace/name' or 'Kind/Name' of target resource, depending on whether target is namespaced or cluster scoped
+	kindNamespacedName string
+
+	// group/kind
+	groupKind      string
+
+	// A predictable and unique ID from a combination of kind, namespace (if applicable) and resource name
+	id                 string
+
+	// Whether the object is namespaced
+	isNamespaced       bool
+}
+
+// Processed information for GatewayClass resources
+type GatewayClass struct {
+	CommonObjRef
+
+	controllerName   string
+	parameters       *CommonObjRef
+
 	// The unprocessed resource
-	raw unstructured.Unstructured
+	raw *gatewayv1b1.GatewayClass
+}
 
-	// Whether the policy CRD is namespaced
-	isNamespaced bool
-
-	// Policy namespace
-	name string
-
-	// Policy kind/name
-	kindName string
-
-
-	// Policy namespace
-	namespace string
-
-	// 'Namespace/name' or 'Name' of policy resource, depending on whether policy CRD is namespaced or cluster scoped
-	namespacedName string
-
-	// group+kind separated by '/'
-	groupKind string
-
-	// A unique resource ID from a combination of kind, namespace (if applicable) and resource name
-	id string
+// Processed information for policy resources
+type Policy struct {
+	CommonObjRef
 
 	// Policy targetRef read from unstructured
 	targetRef *gatewayv1a2.PolicyTargetReference
 
+	// Whether the policy is namespaced
+	isNamespaced bool
 	// Whether the target is namespaced
 	targetIsNamespaced bool
 
@@ -187,6 +206,16 @@ type Policy struct {
 
 	// Unique target ID from a combination of kind, namespace (if applicable) and resource name
 	targetId string
+
+	// The unprocessed resource
+	raw *unstructured.Unstructured
+
+}
+
+type KubeObj interface {
+	GetName() string
+	GetNamespace() string
+	GetObjectKind() schema.ObjectKind
 }
 
 func main() {
@@ -203,7 +232,7 @@ func main() {
 	} else {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
-	outputFormat = flag.String("o", "policy", "output format [policy|graph|gatewayclass-hierarchy]")
+	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree]")
 	flag.Parse()
 
 	config, err := rest.InClusterConfig()
@@ -262,13 +291,40 @@ func main() {
 	//svcList := &corev1.ServiceList{}
 	//err = cl.List(context.TODO(), svcList, client.InNamespace(""))
 
-	state := State{cl, dcl, gwcList, gwList, httpRtList, ingressList, nil}
+	state := State{cl, dcl, nil, gwList, httpRtList, ingressList, nil}
 
-	// Pre-process resources - common processing to make output functions simpler
+	//
+	// Pre-process resources - common processing to make output
+	// functions simpler by e.g. pre-formatting strings
+	//
 
+	// Pre-process GatewayClass resources
+	for _, gwc := range gwcList.Items {
+		gwclass := GatewayClass{}
+		commonPreProc(&gwclass.CommonObjRef, &gwc, false)
+		gwclass.raw = &gwc
+		gwclass.controllerName = string(gwc.Spec.ControllerName)
+		if gwc.Spec.ParametersRef != nil {
+			objref := &CommonObjRef{}
+			objref.name = gwc.Spec.ParametersRef.Name
+			objref.kind = string(gwc.Spec.ParametersRef.Kind)
+			objref.group = string(gwc.Spec.ParametersRef.Group)
+			if gwc.Spec.ParametersRef.Namespace != nil {
+				objref.isNamespaced = true
+				objref.namespace = string(*gwc.Spec.ParametersRef.Namespace)
+			} else {
+				objref.isNamespaced = false
+			}
+			commonObjRefPreProc(objref)
+			gwclass.parameters = objref
+		}
+		state.gwcList = append(state.gwcList, gwclass)
+	}
+
+	// Pre-process policy resource
 	for _, policy := range attachedPolicies {
 		pol := Policy{}
-		pol.raw = policy
+		pol.raw = &policy
 		gvr, isNamespaced, err := unstructured2gvr(cl, &policy)
 		if err != nil {
 			log.Fatalf("Cannot lookup GVR of %+v: %w", policy, err)
@@ -314,9 +370,32 @@ func main() {
 		outputTxtTablePolicyFocus(&state)
 	case "graph":
 		outputDotGraph(&state)
-	case "gatewayclass-hierarchy":
+	case "hierarchy":
 		outputTxtClassHierarchy(&state)
+	case "route-tree":
+		outputTxtRouteTree(&state)
 	//outputTxtTableGatewayFocus(&state)
+	}
+}
+
+func commonPreProc(c *CommonObjRef, obj KubeObj, isNamespaced bool) {
+	c.isNamespaced = isNamespaced
+	c.name = obj.GetName()
+	objkind := obj.GetObjectKind()
+	c.kind = objkind.GroupVersionKind().Kind
+	c.group = objkind.GroupVersionKind().Group
+	commonObjRefPreProc(c)
+}
+
+func commonObjRefPreProc(c *CommonObjRef) {
+	c.kindName = fmt.Sprintf("%s/%s", c.kind, c.name)
+	c.groupKind = fmt.Sprintf("%s/%s", c.group, c.kind)
+	if c.isNamespaced {
+		c.namespacedName = fmt.Sprintf("%s/%s", c.namespace, c.name)
+		c.id = strings.ReplaceAll(fmt.Sprintf("%s_%s_%s", c.kind, c.namespace, c.name), "-", "_")
+	} else {
+		c.namespacedName = c.name
+		c.id = strings.ReplaceAll(fmt.Sprintf("%s_%s", c.kind, c.name), "-", "_")
 	}
 }
 
@@ -326,11 +405,12 @@ func outputDotGraph(s *State) {
 
 	// Nodes, GatewayClasses and parameters
 	fmt.Printf(dot_cluster_template, "cluster_gwc")
-	for _, gwc := range s.gwcList.Items {
-		var params string = fmt.Sprintf("Controller:<br/>%s", gwc.Spec.ControllerName)
-		fmt.Printf(dot_gatewayclass_template, strings.ReplaceAll(gwc.ObjectMeta.Name, "-", "_"), gwc.ObjectMeta.Name, params)
-		if gwc.Spec.ParametersRef != nil {
-			fmt.Printf(dot_gatewayclassparams_template, strings.ReplaceAll(gwc.Spec.ParametersRef.Name, "-", "_"), gwc.Spec.ParametersRef.Group, gwc.Spec.ParametersRef.Kind, gwc.Spec.ParametersRef.Name, "-")
+	for _, gwc := range s.gwcList {
+		var params string = fmt.Sprintf("Controller:<br/>%s", gwc.raw.Spec.ControllerName)
+		fmt.Printf(dot_gatewayclass_template, gwc.id, gwc.name, params)
+		if gwc.parameters != nil {
+			p := gwc.parameters
+			fmt.Printf(dot_gatewayclassparams_template, p.id, p.group, p.kind, p.namespacedName, "-")
 		}
 	}
 	fmt.Print("\t}\n")
@@ -389,9 +469,9 @@ func outputDotGraph(s *State) {
 	}
 
 	// Edges
-	for _, gwc := range s.gwcList.Items {
-		if gwc.Spec.ParametersRef != nil {
-			fmt.Printf("\tGatewayClass_%s -> gwcp_%s\n", strings.ReplaceAll(string(gwc.ObjectMeta.Name), "-", "_"), strings.ReplaceAll(gwc.Spec.ParametersRef.Name, "-", "_"))
+	for _, gwc := range s.gwcList {
+		if gwc.parameters != nil {
+			fmt.Printf("\t%s -> %s\n", gwc.id, gwc.parameters.id)
 		}
 	}
 	for _, gw := range s.gwList.Items {
@@ -451,10 +531,10 @@ func outputTxtTablePolicyFocus(s *State) {
 func outputTxtClassHierarchy(s *State) {
 	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
 	fmt.Fprintln(t, "RESOURCE\tCONFIGURATION")
-	for _, gwc := range s.gwcList.Items {
-		fmt.Fprintf(t, "GatewayClass %s\t\n", gwc.ObjectMeta.Name)
+	for _, gwc := range s.gwcList {
+		fmt.Fprintf(t, "GatewayClass %s\t\n", gwc.name)
 		for _, gw := range s.gwList.Items {
-			if string(gw.Spec.GatewayClassName) != gwc.ObjectMeta.Name {
+			if string(gw.Spec.GatewayClassName) != gwc.name {
 				continue
 			}
 			fmt.Fprintf(t, " ├─ Gateway %s/%s\t", gw.ObjectMeta.Namespace, gw.ObjectMeta.Name)
@@ -486,6 +566,44 @@ func outputTxtClassHierarchy(s *State) {
 				}
 			}
 		}
+	}
+	t.Flush()
+}
+
+// Routing trees
+func outputTxtRouteTree(s *State) {
+	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
+	fmt.Fprintln(t, "HOSTNAME\tPROTOCOL\tPATH\tBACKEND")
+	for _, gw := range s.gwList.Items {
+		for _, l := range gw.Spec.Listeners {
+			if l.Hostname != nil {
+				fmt.Fprintf(t, "%s\t", *l.Hostname)
+			} else {
+				fmt.Fprintf(t, "(none)\t")
+			}
+			fmt.Fprintf(t, "%s:%s/%v\t", l.Name, l.Protocol, l.Port)
+		}
+		fmt.Fprintf(t, "\n")
+			// for _, rt := range s.httpRtList.Items {
+			// 	for _, pref := range rt.Spec.ParentRefs {
+			// 		if IsRefToGateway(pref, NamespacedNameOf(&gw)) {
+			// 			fmt.Fprintf(t, "     ├─ HTTPRoute %s/%s\t\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
+			// 			for _,rule := range rt.Spec.Rules {
+			// 				fmt.Fprintf(t, "     │   ├─ match\t")
+			// 				for _,match := range rule.Matches {
+			// 					fmt.Fprintf(t, "%s %s ", *match.Path.Type, *match.Path.Value)
+			// 				}
+			// 				fmt.Fprintf(t, "\n")
+			// 				fmt.Fprintf(t, "     │   ├─ backends\t")
+			// 				for _,be := range rule.BackendRefs {
+			// 					fmt.Fprintf(t, "%s ", backendRef2String(&be.BackendRef))
+			// 				}
+			// 				fmt.Fprintf(t, "\n")
+			// 			}
+			// 			break // Only one parent ref for each gw
+			// 		}
+			// 	}
+			// }
 	}
 	t.Flush()
 }
