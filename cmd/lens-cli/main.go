@@ -10,10 +10,12 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
+	"gopkg.in/yaml.v3"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+
 	//corev1 "k8s.io/api/core/v1"
 	//"k8s.io/apimachinery/pkg/api/errors"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -22,11 +24,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	//"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
+
 	//
 	// Uncomment to load all auth plugins
 	// _ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -36,10 +40,10 @@ import (
 	// _ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	// _ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 
+	"github.com/michaelvl/gateway-api-lens/pkg/version"
 	client "sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
-	"github.com/michaelvl/gateway-api-lens/pkg/version"
 )
 
 var (
@@ -108,10 +112,11 @@ digraph gatewayapi_config {
 		shape=plain
 	]
 `
-	dot_httproute_template = `	HTTPRoute_%s_%s [
+	// Args: id, namespacedName, body
+	dot_httproute_template = `	%s [
 		fillcolor="#88ff0022"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>HTTPRoute</b><br/>%s/%s</td> </tr>
+			<tr> <td> <b>HTTPRoute</b><br/>%s</td> </tr>
 			<tr> <td>%s</td> </tr>
 		</table>>
 		shape=plain
@@ -130,7 +135,7 @@ digraph gatewayapi_config {
 		fillcolor="#00ccaa22"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>%s</b><br/>%s</td> </tr>
-			<tr> <td>%s</td> </tr>
+			<tr> <td align="left">%s</td> </tr>
 		</table>>
 		shape=plain
 	]
@@ -143,7 +148,7 @@ type State struct {
 	dcl               *dynamic.DynamicClient
 	gwcList           []GatewayClass
 	gwList            []Gateway
-	httpRtList        *gatewayv1b1.HTTPRouteList
+	httpRtList        []HTTPRoute
 	ingressList       *networkingv1.IngressList
 	//attachedPolicies  []unstructured.Unstructured
 	attachedPolicies  []Policy
@@ -195,6 +200,14 @@ type Gateway struct {
 	raw *gatewayv1b1.Gateway
 }
 
+// Processed information for HTTPRoute resources
+type HTTPRoute struct {
+	CommonObjRef
+
+	// The unprocessed resource
+	raw *gatewayv1b1.HTTPRoute
+}
+
 // Processed information for policy resources
 type Policy struct {
 	CommonObjRef
@@ -215,6 +228,9 @@ type Policy struct {
 
 	// Unique target ID from a combination of kind, namespace (if applicable) and resource name
 	targetId string
+
+	// Marshalled YAML
+	spec string
 
 	// The unprocessed resource
 	raw *unstructured.Unstructured
@@ -300,7 +316,7 @@ func main() {
 	//svcList := &corev1.ServiceList{}
 	//err = cl.List(context.TODO(), svcList, client.InNamespace(""))
 
-	state := State{cl, dcl, nil, nil, httpRtList, ingressList, nil}
+	state := State{cl, dcl, nil, nil, nil, ingressList, nil}
 
 	//
 	// Pre-process resources - common processing to make output
@@ -339,6 +355,13 @@ func main() {
 		state.gwList = append(state.gwList, g)
 	}
 
+	// Pre-process HTTPRoute resources
+	for _, rt := range httpRtList.Items {
+		r := HTTPRoute{}
+		commonPreProc(&r.CommonObjRef, &rt, true)
+		r.raw = &rt
+		state.httpRtList = append(state.httpRtList, r)
+	}
 
 	// Pre-process policy resource
 	for _, policy := range attachedPolicies {
@@ -380,6 +403,23 @@ func main() {
 		} else {
 			pol.namespacedName = policy.GetName()
 			pol.id = fmt.Sprintf("%s_%s", policy.GetKind(), strings.ReplaceAll(policy.GetName(), "-", "_"))
+		}
+		spec,found,err := unstructured.NestedMap(policy.Object, "spec")
+		if err != nil {
+			log.Fatalf("Cannot lookup policy spec: %w", err)
+		}
+		if found {
+			delete(spec, "targetRef")
+			body, err := yaml.Marshal(spec)
+			if err != nil {
+				log.Fatalf("Cannot marshal policy spec: %w", err)
+			}
+			pol.spec = ""
+			for _,ln := range strings.Split(string(body), "\n") {
+				if ln != "" {
+					pol.spec += fmt.Sprintf("%s <br/>", ln)
+				}
+			}
 		}
 		state.attachedPolicies = append(state.attachedPolicies, pol)
 	}
@@ -467,10 +507,10 @@ func outputDotGraph(s *State) {
 
 	// Nodes, HTTPRoutes
 	fmt.Printf(dot_cluster_template, "cluster_httproute")
-	for _, rt := range s.httpRtList.Items {
+	for _, rt := range s.httpRtList {
 		var params string
-		if rt.Spec.Hostnames != nil {
-			for idx, hname := range rt.Spec.Hostnames {
+		if rt.raw.Spec.Hostnames != nil {
+			for idx, hname := range rt.raw.Spec.Hostnames {
 				if idx > 0 {
 					params += "<br/>"
 				}
@@ -479,16 +519,16 @@ func outputDotGraph(s *State) {
 		} else {
 			params = "<i>(no hostname)</i>"
 		}
-		fmt.Printf(dot_httproute_template, strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"), rt.ObjectMeta.Namespace, rt.ObjectMeta.Name, params)
+		fmt.Printf(dot_httproute_template, rt.id, rt.namespacedName, params)
 	}
 	fmt.Print("\t}\n")
 
 	// Nodes, backends
 	fmt.Printf(dot_cluster_template, "cluster_backends")
-	for _, rt := range s.httpRtList.Items {
-		for _, rules := range rt.Spec.Rules {
+	for _, rt := range s.httpRtList {
+		for _, rules := range rt.raw.Spec.Rules {
 			for _, backend := range rules.BackendRefs {
-				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Kind, "Service"), Deref(backend.Namespace, gatewayv1b1.Namespace(rt.ObjectMeta.Namespace)), backend.Name, "? endpoint(s)")
+				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.raw.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Kind, "Service"), Deref(backend.Namespace, gatewayv1b1.Namespace(rt.raw.ObjectMeta.Namespace)), backend.Name, "? endpoint(s)")
 			}
 		}
 	}
@@ -496,7 +536,7 @@ func outputDotGraph(s *State) {
 
 	// Nodes, attached policies
 	for _, policy := range s.attachedPolicies {
-		fmt.Printf(dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, "-")
+		fmt.Printf(dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.spec)
 	}
 
 	// Edges
@@ -508,19 +548,19 @@ func outputDotGraph(s *State) {
 	for _, gw := range s.gwList {
 		fmt.Printf("	%s -> %s\n", gw.id, gw.class.id)
 	}
-	for _, rt := range s.httpRtList.Items {
-		for _, pref := range rt.Spec.ParentRefs {
-			ns := rt.ObjectMeta.Namespace
+	for _, rt := range s.httpRtList {
+		for _, pref := range rt.raw.Spec.ParentRefs {
+			ns := rt.raw.ObjectMeta.Namespace
 			if pref.Namespace != nil {
 				ns = string(*pref.Namespace)
 			}
 			if pref.Kind != nil && *pref.Kind == gatewayv1b1.Kind("Gateway") {
-				fmt.Printf("	HTTPRoute_%s_%s -> Gateway_%s_%s\n", strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"), strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
+				fmt.Printf("	%s -> Gateway_%s_%s\n", rt.id, strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
 			}
 		}
-		for _, rules := range rt.Spec.Rules {
+		for _, rules := range rt.raw.Spec.Rules {
 			for _, backend := range rules.BackendRefs {
-				fmt.Printf("	backend_%s_%s -> HTTPRoute_%s_%s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Namespace, "-", "_"), strings.ReplaceAll(rt.ObjectMeta.Name, "-", "_"))
+				fmt.Printf("	backend_%s_%s -> %s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.raw.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), rt.id)
 			}
 		}
 	}
@@ -576,11 +616,11 @@ func outputTxtClassHierarchy(s *State) {
 				}
 			}
 			fmt.Fprintf(t, "\n")
-			for _, rt := range s.httpRtList.Items {
-				for _, pref := range rt.Spec.ParentRefs {
+			for _, rt := range s.httpRtList {
+				for _, pref := range rt.raw.Spec.ParentRefs {
 					if IsRefToGateway(pref, gw) {
-						fmt.Fprintf(t, "     ├─ HTTPRoute %s/%s\t\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
-						for _,rule := range rt.Spec.Rules {
+						fmt.Fprintf(t, "     ├─ HTTPRoute %s\t\n", rt.namespacedName)
+						for _,rule := range rt.raw.Spec.Rules {
 							fmt.Fprintf(t, "     │   ├─ match\t")
 							for _,match := range rule.Matches {
 								fmt.Fprintf(t, "%s %s ", *match.Path.Type, *match.Path.Value)
