@@ -135,7 +135,7 @@ digraph gatewayapi_config {
 		fillcolor="#00ccaa22"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>%s</b><br/>%s</td> </tr>
-			<tr> <td align="left">%s</td> </tr>
+			<tr> <td align="left" balign="left">%s</td> </tr>
 		</table>>
 		shape=plain
 	]
@@ -327,7 +327,7 @@ func main() {
 	for _, gwc := range gwcList.Items {
 		gwclass := GatewayClass{}
 		commonPreProc(&gwclass.CommonObjRef, &gwc, false)
-		gwclass.raw = &gwc
+		gwclass.raw = gwc.DeepCopy()
 		gwclass.controllerName = string(gwc.Spec.ControllerName)
 		if gwc.Spec.ParametersRef != nil {
 			objref := &CommonObjRef{}
@@ -350,7 +350,7 @@ func main() {
 	for _, gw := range gwList.Items {
 		g := Gateway{}
 		commonPreProc(&g.CommonObjRef, &gw, true)
-		g.raw = &gw
+		g.raw = gw.DeepCopy()
 		g.class = state.gatewayclassByName(string(gw.Spec.GatewayClassName))
 		state.gwList = append(state.gwList, g)
 	}
@@ -359,14 +359,14 @@ func main() {
 	for _, rt := range httpRtList.Items {
 		r := HTTPRoute{}
 		commonPreProc(&r.CommonObjRef, &rt, true)
-		r.raw = &rt
+		r.raw = rt.DeepCopy()
 		state.httpRtList = append(state.httpRtList, r)
 	}
 
 	// Pre-process policy resource
 	for _, policy := range attachedPolicies {
 		pol := Policy{}
-		pol.raw = &policy
+		pol.raw = policy.DeepCopy()
 		gvr, isNamespaced, err := unstructured2gvr(cl, &policy)
 		if err != nil {
 			log.Fatalf("Cannot lookup GVR of %+v: %w", policy, err)
@@ -417,7 +417,7 @@ func main() {
 			pol.spec = ""
 			for _,ln := range strings.Split(string(body), "\n") {
 				if ln != "" {
-					pol.spec += fmt.Sprintf("%s <br/>", ln)
+					pol.spec += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
 				}
 			}
 		}
@@ -546,7 +546,9 @@ func outputDotGraph(s *State) {
 		}
 	}
 	for _, gw := range s.gwList {
-		fmt.Printf("	%s -> %s\n", gw.id, gw.class.id)
+		if gw.class != nil { // no matching gatewayclass
+			fmt.Printf("	%s -> %s\n", gw.id, gw.class.id)
+		}
 	}
 	for _, rt := range s.httpRtList {
 		for _, pref := range rt.raw.Spec.ParentRefs {
@@ -644,7 +646,7 @@ func outputTxtClassHierarchy(s *State) {
 // Routing trees
 func outputTxtRouteTree(s *State) {
 	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-	fmt.Fprintln(t, "HOSTNAME\tPROTOCOL\tPATH\tBACKEND")
+	fmt.Fprintln(t, "HOSTNAME/MATCH\tBACKEND")
 	for _, gw := range s.gwList {
 		for _, l := range gw.raw.Spec.Listeners {
 			if l.Hostname != nil {
@@ -652,29 +654,24 @@ func outputTxtRouteTree(s *State) {
 			} else {
 				fmt.Fprintf(t, "(none)\t")
 			}
-			fmt.Fprintf(t, "%s:%s/%v\t", l.Name, l.Protocol, l.Port)
 		}
 		fmt.Fprintf(t, "\n")
-			// for _, rt := range s.httpRtList.Items {
-			// 	for _, pref := range rt.Spec.ParentRefs {
-			// 		if IsRefToGateway(pref, gw) {
-			// 			fmt.Fprintf(t, "     ├─ HTTPRoute %s/%s\t\n", rt.ObjectMeta.Namespace, rt.ObjectMeta.Name)
-			// 			for _,rule := range rt.Spec.Rules {
-			// 				fmt.Fprintf(t, "     │   ├─ match\t")
-			// 				for _,match := range rule.Matches {
-			// 					fmt.Fprintf(t, "%s %s ", *match.Path.Type, *match.Path.Value)
-			// 				}
-			// 				fmt.Fprintf(t, "\n")
-			// 				fmt.Fprintf(t, "     │   ├─ backends\t")
-			// 				for _,be := range rule.BackendRefs {
-			// 					fmt.Fprintf(t, "%s ", backendRef2String(&be.BackendRef))
-			// 				}
-			// 				fmt.Fprintf(t, "\n")
-			// 			}
-			// 			break // Only one parent ref for each gw
-			// 		}
-			// 	}
-			// }
+		for _, rt := range s.httpRtList {
+			for _, pref := range rt.raw.Spec.ParentRefs {
+				if IsRefToGateway(pref, gw) {
+					for _,rule := range rt.raw.Spec.Rules {
+						for _,match := range rule.Matches {
+							fmt.Fprintf(t, "  ├─ %s %s\t", *match.Path.Type, *match.Path.Value)
+							for _,be := range rule.BackendRefs {
+								fmt.Fprintf(t, "%s ", backendRef2String(&be.BackendRef))
+							}
+						}
+					}
+					fmt.Fprintf(t, "\n")
+					break // Only one parent ref for each gw
+				}
+			}
+		}
 	}
 	t.Flush()
 }

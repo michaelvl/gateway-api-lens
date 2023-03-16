@@ -47,3 +47,14 @@ GatewayClass cloud-gw
          ├─ match                     PathPrefix /store
          └─ backends                  Service/foo-store-v1:80@90 Service/foo-store-v2:80@10
 ```
+
+# Route-tree Format
+
+```bash
+$ bin/linux_amd64/lens-cli -o route-tree
+
+HOSTNAME/MATCH         BACKEND
+foo.example.com
+  ├─ PathPrefix /site  Service/foo-site/foo-site:80@1
+  ├─ PathPrefix /store Service/foo-store-v1:80@90 Service/foo-store-v2:80@10
+```
