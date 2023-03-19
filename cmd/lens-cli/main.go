@@ -157,14 +157,15 @@ type State struct {
 type CommonObjRef struct {
 	name           string
 	namespace      string
-	kind           string
 	group          string
+	kind           string
+	version        string
 
 	// kind/name
 	kindName       string
 
 	// 'Namespace/name' or 'Name' of target resource, depending on whether target is namespaced or cluster scoped
-	namespacedName     string
+	namespacedName string
 
 	// 'Kind/Namespace/name' or 'Kind/Name' of target resource, depending on whether target is namespaced or cluster scoped
 	kindNamespacedName string
@@ -173,10 +174,10 @@ type CommonObjRef struct {
 	groupKind      string
 
 	// A predictable and unique ID from a combination of kind, namespace (if applicable) and resource name
-	id                 string
+	id             string
 
 	// Whether the object is namespaced
-	isNamespaced       bool
+	isNamespaced   bool
 }
 
 // Processed information for GatewayClass resources
@@ -188,6 +189,9 @@ type GatewayClass struct {
 
 	// The unprocessed resource
 	raw *gatewayv1b1.GatewayClass
+
+	// The unprocessed parameters
+	rawParams *unstructured.Unstructured
 }
 
 // Processed information for Gateway resources
@@ -229,12 +233,12 @@ type Policy struct {
 	// Unique target ID from a combination of kind, namespace (if applicable) and resource name
 	targetId string
 
-	// Marshalled YAML
-	spec string
+	// Marshalled YAML of spec section
+	specTxt string
+	specHtml string
 
 	// The unprocessed resource
 	raw *unstructured.Unstructured
-
 }
 
 type KubeObj interface {
@@ -342,6 +346,10 @@ func main() {
 			}
 			commonObjRefPreProc(objref)
 			gwclass.parameters = objref
+			gwclass.rawParams, err = getGatewayParameters(cl, dcl, &gwclass)
+			if err != nil {
+				log.Printf("Cannot lookup GatewayClass parameter: %s\n", objref.kindNamespacedName)
+			}
 		}
 		state.gwcList = append(state.gwcList, gwclass)
 	}
@@ -414,10 +422,11 @@ func main() {
 			if err != nil {
 				log.Fatalf("Cannot marshal policy spec: %w", err)
 			}
-			pol.spec = ""
-			for _,ln := range strings.Split(string(body), "\n") {
+			pol.specTxt = string(body)
+			pol.specHtml = ""
+			for _,ln := range strings.Split(pol.specTxt, "\n") {
 				if ln != "" {
-					pol.spec += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
+					pol.specHtml += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
 				}
 			}
 		}
@@ -437,6 +446,7 @@ func main() {
 	}
 }
 
+// Fill-in CommonObjRef fields from Kubernetes object
 func commonPreProc(c *CommonObjRef, obj KubeObj, isNamespaced bool) {
 	c.name = obj.GetName()
 	c.isNamespaced = isNamespaced
@@ -445,10 +455,13 @@ func commonPreProc(c *CommonObjRef, obj KubeObj, isNamespaced bool) {
 	}
 	objkind := obj.GetObjectKind()
 	c.kind = objkind.GroupVersionKind().Kind
-	c.group = objkind.GroupVersionKind().Group
+	gv, _ := schema.ParseGroupVersion(objkind.GroupVersionKind().Group)
+	c.group = gv.Group
+	c.version = gv.Version
 	commonObjRefPreProc(c)
 }
 
+// Calculate common strings from basic settings
 func commonObjRefPreProc(c *CommonObjRef) {
 	c.kindName = fmt.Sprintf("%s/%s", c.kind, c.name)
 	c.groupKind = fmt.Sprintf("%s/%s", c.group, c.kind)
@@ -459,6 +472,7 @@ func commonObjRefPreProc(c *CommonObjRef) {
 		c.namespacedName = c.name
 		c.id = strings.ReplaceAll(fmt.Sprintf("%s_%s", c.kind, c.name), "-", "_")
 	}
+	c.kindNamespacedName = fmt.Sprintf("%s/%s", c.kind, c.namespacedName)
 }
 
 func (s *State) gatewayclassByName(name string) *GatewayClass {
@@ -536,7 +550,7 @@ func outputDotGraph(s *State) {
 
 	// Nodes, attached policies
 	for _, policy := range s.attachedPolicies {
-		fmt.Printf(dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.spec)
+		fmt.Printf(dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.specHtml)
 	}
 
 	// Edges
@@ -824,9 +838,33 @@ func crd2gvr(cl client.Client, crd *unstructured.Unstructured) (*schema.GroupVer
 		return nil, err
 	}
 
-	return &schema.GroupVersionResource{
-		Group:	  group,
-		Version:  version,
-		Resource: mapping.Resource.Resource,
-	}, nil
+	return &mapping.Resource, nil
+}
+
+func getGatewayParameters(cl client.Client, dcl *dynamic.DynamicClient, gwc *GatewayClass) (*unstructured.Unstructured, error) {
+	var res *unstructured.Unstructured
+	var err error
+
+	gk := schema.GroupKind{
+		Group: gwc.parameters.group,
+		Kind:  gwc.parameters.kind,
+	}
+	mapping, err := cl.RESTMapper().RESTMapping(gk)
+	if err != nil {
+		return nil, err
+	}
+
+	isNamespaced := mapping.Scope.Name() ==  meta.RESTScopeNameNamespace
+	gvr := mapping.Resource
+
+	if isNamespaced {
+		res, err = dcl.Resource(gvr).Namespace(gwc.parameters.namespace).Get(context.TODO(), gwc.parameters.name, metav1.GetOptions{})
+	} else {
+		res, err = dcl.Resource(gvr).Get(context.TODO(), gwc.parameters.name, metav1.GetOptions{})
+	}
+	if err != nil {
+		log.Fatalf("Cannot get parameters %+v: %v", gvr, err)
+		return nil, err
+	}
+	return res, nil
 }
