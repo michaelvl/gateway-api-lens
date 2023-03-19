@@ -97,7 +97,7 @@ digraph gatewayapi_config {
 		fillcolor="#0033dd11"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>%s/%s</b><br/>%s</td> </tr>
-			<tr> <td>%s</td> </tr>
+			<tr> <td align="left" balign="left">%s</td> </tr>
 		</table>>
 		shape=plain
 	]
@@ -131,7 +131,7 @@ digraph gatewayapi_config {
 		shape=plain
 	]
 `
-	dot_policy_template = `	policy_%s [
+	dot_policy_template = `	%s [
 		fillcolor="#00ccaa22"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td> <b>%s</b><br/>%s</td> </tr>
@@ -178,6 +178,10 @@ type CommonObjRef struct {
 
 	// Whether the object is namespaced
 	isNamespaced   bool
+
+	// Marshalled YAML of body section (typically 'spec')
+	bodyTxt string
+	bodyHtml string
 }
 
 // Processed information for GatewayClass resources
@@ -232,10 +236,6 @@ type Policy struct {
 
 	// Unique target ID from a combination of kind, namespace (if applicable) and resource name
 	targetId string
-
-	// Marshalled YAML of spec section
-	specTxt string
-	specHtml string
 
 	// The unprocessed resource
 	raw *unstructured.Unstructured
@@ -349,6 +349,15 @@ func main() {
 			gwclass.rawParams, err = getGatewayParameters(cl, dcl, &gwclass)
 			if err != nil {
 				log.Printf("Cannot lookup GatewayClass parameter: %s\n", objref.kindNamespacedName)
+			} else {
+				body,found,err := unstructured.NestedMap(gwclass.rawParams.Object, "data")
+				if err != nil {
+					log.Fatalf("Cannot lookup GatewayClass parameter body: %w", err)
+				}
+				if found {
+					//delete(spec, "targetRef")
+					commonBodyTextProc(gwclass.parameters, body)
+				}
 			}
 		}
 		state.gwcList = append(state.gwcList, gwclass)
@@ -418,17 +427,7 @@ func main() {
 		}
 		if found {
 			delete(spec, "targetRef")
-			body, err := yaml.Marshal(spec)
-			if err != nil {
-				log.Fatalf("Cannot marshal policy spec: %w", err)
-			}
-			pol.specTxt = string(body)
-			pol.specHtml = ""
-			for _,ln := range strings.Split(pol.specTxt, "\n") {
-				if ln != "" {
-					pol.specHtml += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
-				}
-			}
+			commonBodyTextProc(&pol.CommonObjRef, spec)
 		}
 		state.attachedPolicies = append(state.attachedPolicies, pol)
 	}
@@ -484,6 +483,20 @@ func (s *State) gatewayclassByName(name string) *GatewayClass {
 	return nil
 }
 
+func commonBodyTextProc(c *CommonObjRef, body map[string]any) {
+	b, err := yaml.Marshal(body)
+	if err != nil {
+		log.Fatalf("Cannot marshal resource body selection: %w", err)
+	}
+	c.bodyTxt = string(b)
+	c.bodyHtml = ""
+	for _,ln := range strings.Split(c.bodyTxt, "\n") {
+		if ln != "" {
+			c.bodyHtml += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
+		}
+	}
+}
+
 func outputDotGraph(s *State) {
 
 	fmt.Print(dot_graph_template_header)
@@ -495,7 +508,7 @@ func outputDotGraph(s *State) {
 		fmt.Printf(dot_gatewayclass_template, gwc.id, gwc.name, params)
 		if gwc.parameters != nil {
 			p := gwc.parameters
-			fmt.Printf(dot_gatewayclassparams_template, p.id, p.group, p.kind, p.namespacedName, "-")
+			fmt.Printf(dot_gatewayclassparams_template, p.id, p.group, p.kind, p.namespacedName, p.bodyHtml)
 		}
 	}
 	fmt.Print("\t}\n")
@@ -550,7 +563,7 @@ func outputDotGraph(s *State) {
 
 	// Nodes, attached policies
 	for _, policy := range s.attachedPolicies {
-		fmt.Printf(dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.specHtml)
+		fmt.Printf(dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.bodyHtml)
 	}
 
 	// Edges
@@ -582,7 +595,7 @@ func outputDotGraph(s *State) {
 	}
 	// Edges, attached policies
 	for _, policy := range s.attachedPolicies {
-		fmt.Printf("\tpolicy_%s -> %s\n", policy.id, policy.targetId)
+		fmt.Printf("\t%s -> %s\n", policy.id, policy.targetId)
 	}
 	fmt.Print(dot_graph_template_footer)
 }
