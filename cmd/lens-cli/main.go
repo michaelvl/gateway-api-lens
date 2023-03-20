@@ -384,12 +384,11 @@ func main() {
 	for _, policy := range attachedPolicies {
 		pol := Policy{}
 		pol.raw = policy.DeepCopy()
-		gvr, isNamespaced, err := unstructured2gvr(cl, &policy)
+		_, isNamespaced, err := unstructured2gvr(cl, &policy)
 		if err != nil {
 			log.Fatalf("Cannot lookup GVR of %+v: %w", policy, err)
 		}
-		pol.groupKind = fmt.Sprintf("%s/%s", gvr.Group, policy.GetKind())
-		pol.isNamespaced = isNamespaced
+		commonPreProc(&pol.CommonObjRef, &policy, isNamespaced)
 		pol.targetRef, err = unstructured2TargetRef(policy)
 		if err != nil {
 			log.Fatalf("Cannot convert policy to targetRef: %w", err)
@@ -409,17 +408,6 @@ func main() {
 			pol.targetKindNamespacedName = fmt.Sprintf("%s/%s", pol.targetRef.Kind, pol.targetRef.Name)
 			pol.targetId = fmt.Sprintf("%s_%s", pol.targetRef.Kind,
 				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
-		}
-		pol.name = policy.GetName()
-		pol.namespace = policy.GetNamespace()
-		pol.kindName = fmt.Sprintf("%s/%s", policy.GetKind(), policy.GetName())
-		if isNamespaced {
-			pol.namespacedName = fmt.Sprintf("%s/%s", policy.GetNamespace(), policy.GetName())
-			pol.id = fmt.Sprintf("%s_%s_%s", policy.GetKind(), strings.ReplaceAll(policy.GetNamespace(), "-", "_"),
-				strings.ReplaceAll(policy.GetName(), "-", "_"))
-		} else {
-			pol.namespacedName = policy.GetName()
-			pol.id = fmt.Sprintf("%s_%s", policy.GetKind(), strings.ReplaceAll(policy.GetName(), "-", "_"))
 		}
 		spec,found,err := unstructured.NestedMap(policy.Object, "spec")
 		if err != nil {
@@ -453,10 +441,10 @@ func commonPreProc(c *CommonObjRef, obj KubeObj, isNamespaced bool) {
 		c.namespace = obj.GetNamespace()
 	}
 	objkind := obj.GetObjectKind()
-	c.kind = objkind.GroupVersionKind().Kind
-	gv, _ := schema.ParseGroupVersion(objkind.GroupVersionKind().Group)
-	c.group = gv.Group
-	c.version = gv.Version
+	gvk := objkind.GroupVersionKind()
+	c.kind = gvk.Kind
+	c.group = gvk.Group
+	c.version = gvk.Version
 	commonObjRefPreProc(c)
 }
 
@@ -821,11 +809,7 @@ func unstructured2gvr(cl client.Client, us *unstructured.Unstructured) (*schema.
 
 	isNamespaced := mapping.Scope.Name() ==  meta.RESTScopeNameNamespace
 
-	return &schema.GroupVersionResource{
-		Group:	  gk.Group,
-		Version:  gv.Version,
-		Resource: mapping.Resource.Resource,
-	}, isNamespaced, nil
+	return &mapping.Resource, isNamespaced, nil
 }
 
 // Lookup GVR for CRD in unstructured.Unstructured
