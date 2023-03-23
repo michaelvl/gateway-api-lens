@@ -82,47 +82,6 @@ digraph gatewayapi_config {
 `
 	dot_graph_template_footer string = `}
 `
-	// Args: id, name, body
-	dot_gatewayclass_template = `	%s [
-		fillcolor="#dde6ff"
-		color="#c9cee9"
-		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td sides="B"> <b>GatewayClass</b><br/>%s</td> </tr>
-			<tr> <td sides="T">%s</td> </tr>
-		</table>>
-	]
-`
-
-	// Args: id, param group, param kind, param name, param body
-	dot_gatewayclassparams_template = `	%s [
-		fillcolor="#eef1fc"
-		color="#ced1dc"
-		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td sides="B"> <b>%s/%s</b><br/>%s</td> </tr>
-			<tr> <td sides="T" align="left" balign="left">%s</td> </tr>
-		</table>>
-	]
-`
-	// Args: id, namespacedName, body
-	dot_gateway_template = `	%s [
-		fillcolor="#ffefdd"
-		color="#cbbcaa"
-		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td sides="B"> <b>Gateway</b><br/>%s</td> </tr>
-			<tr> <td sides="T">%s</td> </tr>
-		</table>>
-	]
-`
-	// Args: id, namespacedName, body
-	dot_httproute_template = `	%s [
-		fillcolor="#eefedc"
-		color="#b4c3a3"
-		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td sides="B"> <b>HTTPRoute</b><br/>%s</td> </tr>
-			<tr> <td sides="T">%s</td> </tr>
-		</table>>
-	]
-`
 	dot_backend_template = `	backend_%s_%s [
 		fillcolor="#ddefef"
 		color="#8fa0a0"
@@ -132,17 +91,15 @@ digraph gatewayapi_config {
 		</table>>
 	]
 `
-	dot_policy_template = `	%s [
-		fillcolor="#eef1fc"
-		color="#ced1dc"
-		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td sides="B"> <b>%s</b><br/>%s</td> </tr>
-			<tr> <td sides="T" align="left" balign="left">%s</td> </tr>
-		</table>>
-	]
-`
 	dot_cluster_template = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
 )
+
+var dot_gatewayclass_template       = gv_node_template("GatewayClass", "dde6ff")
+var dot_gatewayclassparams_template = gv_node_template("%s/%s", "eef1fc")
+var dot_gateway_template            = gv_node_template("Gateway", "ffefdd")
+var dot_httproute_template          = gv_node_template("HTTPRoute", "eefedc")
+//var dot_backend_template            = gv_node_template("%s", "ddefef")
+var dot_policy_template             = gv_node_template("%s", "eef1fc")
 
 type State struct {
 	cl                client.Client
@@ -864,4 +821,23 @@ func getGatewayParameters(cl client.Client, dcl *dynamic.DynamicClient, gwc *Gat
 		return nil, err
 	}
 	return res, nil
+}
+
+func gv_node_template(resType, colour string) string {
+	var r, g, b uint8
+	shade := 0.8
+	fmt.Sscanf(colour, "%02x%02x%02x", &r, &g, &b)
+	sr := uint8(float64(r)*shade)
+	sg := uint8(float64(g)*shade)
+	sb := uint8(float64(b)*shade)
+	edgecolour := fmt.Sprintf("%02x%02x%02x", sr, sg, sb)
+
+	return `	%s [
+		fillcolor="#`+colour+`"
+		color="#`+edgecolour+`"
+		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+			<tr> <td sides="B"> <b>`+resType+`</b><br/>%s</td> </tr>
+			<tr> <td sides="T">%s</td> </tr>
+		</table>>
+	]`+"\n"
 }
