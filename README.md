@@ -12,7 +12,7 @@ illustrate the different outputs generated:
 # Graphviz Graph Output
 
 ```bash
-$ bin/linux_amd64/lens-cli -o graph  |  dot -Tsvg > output.svg
+$ gateway-api-lens -o graph  |  dot -Tsvg > output.svg
 ```
 
 The is an example where service policies (see
@@ -24,7 +24,7 @@ to both `GatewayClass` and `Gateway` resources:
 # Policies in Table Format
 
 ```bash
-$ bin/linux_amd64/lens-cli -o policy
+$ gateway-api-lens -o policy
 
 NAMESPACE POLICY                                                   TARGET                        DEFAULT OVERRIDE
           ACMEClusterServicePolicy/acmeclusterservicepolicy-sample GatewayClass/cloud-gw         No      Yes
@@ -35,7 +35,7 @@ foo-infra ACMEServicePolicy/acmeservicepolicy-sample2              GatewayClass/
 # Hierarchy Format
 
 ```bash
-$ bin/linux_amd64/lens-cli -o hierarchy
+$ gateway-api-lens -o hierarchy
 
 RESOURCE                              CONFIGURATION
 GatewayClass cloud-gw
@@ -51,10 +51,10 @@ GatewayClass cloud-gw
 # Route-tree Format
 
 ```bash
-$ bin/linux_amd64/lens-cli -o route-tree
+$ gateway-api-lens -o route-tree
 
 HOSTNAME/MATCH         BACKEND
 foo.example.com
   ├─ PathPrefix /site  Service/foo-site/foo-site:80@1
-  ├─ PathPrefix /store Service/foo-store-v1:80@90 Service/foo-store-v2:80@10
+  └─ PathPrefix /store Service/foo-store-v1:80@90 Service/foo-store-v2:80@10
 ```
