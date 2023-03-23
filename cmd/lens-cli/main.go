@@ -63,12 +63,12 @@ digraph gatewayapi_config {
 	#	newrank = true
 	#]
 	node [
-		style=filled
+		style="rounded,filled"
 		shape=rect
-		color=red
-		pencolor="#00000044" // frames color
+		fillcolor=red
+		penwidth=3
+		pencolor="#00000044"
 		fontname="Helvetica,Arial,sans-serif"
-		shape=plaintext
 	]
 	edge [
 		arrowsize=0.5
@@ -76,68 +76,69 @@ digraph gatewayapi_config {
 		labeldistance=3
 		labelfontcolor="#00000080"
 		penwidth=2
-		style=dotted
+		color="#888888"
+		style=solid
 	]
 `
 	dot_graph_template_footer string = `}
 `
 	// Args: id, name, body
 	dot_gatewayclass_template = `	%s [
-		fillcolor="#0044ff22"
+		fillcolor="#dde6ff"
+		color="#c9cee9"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>GatewayClass</b><br/>%s</td> </tr>
-			<tr> <td>%s</td> </tr>
+			<tr> <td sides="B"> <b>GatewayClass</b><br/>%s</td> </tr>
+			<tr> <td sides="T">%s</td> </tr>
 		</table>>
-		shape=plain
 	]
 `
 
 	// Args: id, param group, param kind, param name, param body
 	dot_gatewayclassparams_template = `	%s [
-		fillcolor="#0033dd11"
+		fillcolor="#eef1fc"
+		color="#ced1dc"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>%s/%s</b><br/>%s</td> </tr>
-			<tr> <td align="left" balign="left">%s</td> </tr>
+			<tr> <td sides="B"> <b>%s/%s</b><br/>%s</td> </tr>
+			<tr> <td sides="T" align="left" balign="left">%s</td> </tr>
 		</table>>
-		shape=plain
 	]
 `
 	// Args: id, namespacedName, body
 	dot_gateway_template = `	%s [
-		fillcolor="#ff880022"
+		fillcolor="#ffefdd"
+		color="#cbbcaa"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>Gateway</b><br/>%s</td> </tr>
-			<tr> <td>%s</td> </tr>
+			<tr> <td sides="B"> <b>Gateway</b><br/>%s</td> </tr>
+			<tr> <td sides="T">%s</td> </tr>
 		</table>>
-		shape=plain
 	]
 `
 	// Args: id, namespacedName, body
 	dot_httproute_template = `	%s [
-		fillcolor="#88ff0022"
+		fillcolor="#eefedc"
+		color="#b4c3a3"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>HTTPRoute</b><br/>%s</td> </tr>
-			<tr> <td>%s</td> </tr>
+			<tr> <td sides="B"> <b>HTTPRoute</b><br/>%s</td> </tr>
+			<tr> <td sides="T">%s</td> </tr>
 		</table>>
-		shape=plain
 	]
 `
 	dot_backend_template = `	backend_%s_%s [
-		fillcolor="#00888822"
+		fillcolor="#ddefef"
+		color="#8fa0a0"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>%s</b><br/>%s/%s</td> </tr>
-			<tr> <td>%s</td> </tr>
+			<tr> <td sides="B"> <b>%s</b><br/>%s/%s</td> </tr>
+			<tr> <td sides="T">%s</td> </tr>
 		</table>>
-		shape=plain
 	]
 `
 	dot_policy_template = `	%s [
-		fillcolor="#00ccaa22"
+		fillcolor="#eef1fc"
+		color="#ced1dc"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td> <b>%s</b><br/>%s</td> </tr>
-			<tr> <td align="left" balign="left">%s</td> </tr>
+			<tr> <td sides="B"> <b>%s</b><br/>%s</td> </tr>
+			<tr> <td sides="T" align="left" balign="left">%s</td> </tr>
 		</table>>
-		shape=plain
 	]
 `
 	dot_cluster_template = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
@@ -220,22 +221,13 @@ type HTTPRoute struct {
 type Policy struct {
 	CommonObjRef
 
+	targetRef    *CommonObjRef
+
 	// Policy targetRef read from unstructured
-	targetRef *gatewayv1a2.PolicyTargetReference
+	rawTargetRef *gatewayv1a2.PolicyTargetReference
 
 	// Whether the policy is namespaced
 	isNamespaced bool
-	// Whether the target is namespaced
-	targetIsNamespaced bool
-
-	// 'Namespace/name' or 'Name' of target resource, depending on whether target is namespaced or cluster scoped
-	targetNamespacedName string
-
-	// 'Kind/Namespace/name' or 'Kind/Name' of target resource, depending on whether target is namespaced or cluster scoped
-	targetKindNamespacedName string
-
-	// Unique target ID from a combination of kind, namespace (if applicable) and resource name
-	targetId string
 
 	// The unprocessed resource
 	raw *unstructured.Unstructured
@@ -350,7 +342,7 @@ func main() {
 			if err != nil {
 				log.Printf("Cannot lookup GatewayClass parameter: %s\n", objref.kindNamespacedName)
 			} else {
-				body,found,err := unstructured.NestedMap(gwclass.rawParams.Object, "data")
+				body,found,err := unstructured.NestedMap(gwclass.rawParams.Object, "spec", "values")
 				if err != nil {
 					log.Fatalf("Cannot lookup GatewayClass parameter body: %w", err)
 				}
@@ -389,26 +381,27 @@ func main() {
 			log.Fatalf("Cannot lookup GVR of %+v: %w", policy, err)
 		}
 		commonPreProc(&pol.CommonObjRef, &policy, isNamespaced)
-		pol.targetRef, err = unstructured2TargetRef(policy)
+		pol.rawTargetRef, err = unstructured2TargetRef(policy)
 		if err != nil {
 			log.Fatalf("Cannot convert policy to targetRef: %w", err)
 		}
-		pol.targetIsNamespaced, err = isNamespacedTargetRef(cl, pol.targetRef)
+		targetIsNamespaced, err := isNamespacedTargetRef(cl, pol.rawTargetRef)
 		if err != nil {
-			log.Fatalf("Cannot lookup namespace scope for targetRef %+v, policy %+v", pol.targetRef, policy)
+			log.Fatalf("Cannot lookup namespace scope for targetRef %+v, policy %+v", pol.rawTargetRef, policy)
 		}
-		if pol.targetIsNamespaced {
-			pol.targetNamespacedName = fmt.Sprintf("%s/%s",  *pol.targetRef.Namespace, pol.targetRef.Name)
-			pol.targetKindNamespacedName = fmt.Sprintf("%s/%s/%s", pol.targetRef.Kind,  *pol.targetRef.Namespace, pol.targetRef.Name)
-			pol.targetId = fmt.Sprintf("%s_%s_%s", pol.targetRef.Kind,
-				strings.ReplaceAll(string(*pol.targetRef.Namespace), "-", "_"),
-				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
+		objref := &CommonObjRef{}
+		objref.name = string(pol.rawTargetRef.Name)
+		objref.kind = string(pol.rawTargetRef.Kind)
+		objref.group = string(pol.rawTargetRef.Group)
+		if targetIsNamespaced {
+			objref.isNamespaced = true
+			objref.namespace = string(*pol.rawTargetRef.Namespace)
 		} else {
-			pol.targetNamespacedName = string(pol.targetRef.Name)
-			pol.targetKindNamespacedName = fmt.Sprintf("%s/%s", pol.targetRef.Kind, pol.targetRef.Name)
-			pol.targetId = fmt.Sprintf("%s_%s", pol.targetRef.Kind,
-				strings.ReplaceAll(string(pol.targetRef.Name), "-", "_"))
+			objref.isNamespaced = false
 		}
+		commonObjRefPreProc(objref)
+		pol.targetRef = objref
+		//
 		spec,found,err := unstructured.NestedMap(policy.Object, "spec")
 		if err != nil {
 			log.Fatalf("Cannot lookup policy spec: %w", err)
@@ -583,7 +576,14 @@ func outputDotGraph(s *State) {
 	}
 	// Edges, attached policies
 	for _, policy := range s.attachedPolicies {
-		fmt.Printf("\t%s -> %s\n", policy.id, policy.targetId)
+		fmt.Printf("\t%s -> %s\n", policy.id, policy.targetRef.id)
+		if policy.targetRef.kind == "Namespace" {  // Namespace policies
+			for _, gw := range s.gwList {
+				if gw.namespace == policy.targetRef.name && gw.class != nil { // no matching gatewayclass
+					fmt.Printf("	%s -> %s [style=dotted]\n", policy.id, gw.id)
+				}
+			}
+		}
 	}
 	fmt.Print(dot_graph_template_footer)
 }
@@ -607,9 +607,9 @@ func outputTxtTablePolicyFocus(s *State) {
 			override = "Yes"
 		}
 		if policy.isNamespaced {
-			fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", policy.namespace, policy.kindName, policy.targetKindNamespacedName, def, override)
+			fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", policy.namespace, policy.kindName, policy.targetRef.kindNamespacedName, def, override)
 		} else {
-			fmt.Fprintf(t, "\t%s\t%s\t%s\t%s\n", policy.kindName, policy.targetKindNamespacedName, def, override)
+			fmt.Fprintf(t, "\t%s\t%s\t%s\t%s\n", policy.kindName, policy.targetRef.kindNamespacedName, def, override)
 		}
 	}
 	t.Flush()
