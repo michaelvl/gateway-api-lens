@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"math/rand"
 	"strings"
 	"text/tabwriter"
 
@@ -54,14 +55,6 @@ const (
 	dot_graph_template_header string = `
 digraph gatewayapi_config {
 	rankdir = RL
-	#graph [
-	#	label = "Gateway API Configuration\n\n"
-	#	labelloc = t
-	#	fontname = "Helvetica,Arial,sans-serif"
-	#	fontsize = 20
-	#	layout = dot
-	#	newrank = true
-	#]
 	node [
 		style="rounded,filled"
 		shape=rect
@@ -82,24 +75,17 @@ digraph gatewayapi_config {
 `
 	dot_graph_template_footer string = `}
 `
-	dot_backend_template = `	backend_%s_%s [
-		fillcolor="#ddefef"
-		color="#8fa0a0"
-		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
-			<tr> <td sides="B"> <b>%s</b><br/>%s/%s</td> </tr>
-			<tr> <td sides="T">%s</td> </tr>
-		</table>>
-	]
-`
 	dot_cluster_template = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
 )
 
-var dot_gatewayclass_template       = gv_node_template("GatewayClass", "dde6ff")
-var dot_gatewayclassparams_template = gv_node_template("%s/%s", "eef1fc")
-var dot_gateway_template            = gv_node_template("Gateway", "ffefdd")
-var dot_httproute_template          = gv_node_template("HTTPRoute", "eefedc")
-//var dot_backend_template            = gv_node_template("%s", "ddefef")
-var dot_policy_template             = gv_node_template("%s", "eef1fc")
+var colourWheel = 8
+
+var dot_gatewayclass_template       = gv_node_template("GatewayClass", false, colourWheel)
+var dot_gatewayclassparams_template = gv_node_template("%s", true, colourWheel+1)
+var dot_gateway_template            = gv_node_template("Gateway", false, colourWheel+2)
+var dot_httproute_template          = gv_node_template("HTTPRoute", false, colourWheel+3)
+var dot_backend_template            = gv_node_template("%s", false, colourWheel+4)
+var dot_policy_template             = gv_node_template("%s", true, colourWheel+5)
 
 type State struct {
 	cl                client.Client
@@ -108,7 +94,6 @@ type State struct {
 	gwList            []Gateway
 	httpRtList        []HTTPRoute
 	ingressList       *networkingv1.IngressList
-	//attachedPolicies  []unstructured.Unstructured
 	attachedPolicies  []Policy
 }
 
@@ -170,6 +155,8 @@ type Gateway struct {
 type HTTPRoute struct {
 	CommonObjRef
 
+	backends     []*CommonObjRef
+
 	// The unprocessed resource
 	raw *gatewayv1b1.HTTPRoute
 }
@@ -224,9 +211,12 @@ func main() {
 		}
 	}
 
-	cl, _ := client.New(config, client.Options{
+	cl, err := client.New(config, client.Options{
 		Scheme: scheme,
 	})
+	if err != nil {
+		panic(err.Error())
+	}
 	dcl := dynamic.NewForConfigOrDie(config)
 
 	gwcList := &gatewayv1b1.GatewayClassList{}
@@ -325,6 +315,27 @@ func main() {
 	for _, rt := range httpRtList.Items {
 		r := HTTPRoute{}
 		commonPreProc(&r.CommonObjRef, &rt, true)
+		for _, rules := range rt.Spec.Rules {
+			for _, backend := range rules.BackendRefs {
+				objref := &CommonObjRef{}
+				objref.name = string(backend.Name)
+				objref.kind = string(Deref(backend.Kind, "Service"))
+				objref.group = string(Deref(backend.Group, ""))
+				isNamespaced, err := isNamespacedBackendObjectRef(cl, &backend.BackendObjectReference)
+				if err != nil {
+					log.Fatalf("Cannot detect if Backend resource is namespaced: %w", err)
+				}
+				if isNamespaced {
+					objref.isNamespaced = true
+					objref.namespace = string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.ObjectMeta.Namespace)))
+				} else {
+					objref.isNamespaced = false
+				}
+				commonObjRefPreProc(objref)
+				r.backends = append(r.backends, objref)
+			}
+		}
+
 		r.raw = rt.DeepCopy()
 		state.httpRtList = append(state.httpRtList, r)
 	}
@@ -401,7 +412,11 @@ func commonPreProc(c *CommonObjRef, obj KubeObj, isNamespaced bool) {
 // Calculate common strings from basic settings
 func commonObjRefPreProc(c *CommonObjRef) {
 	c.kindName = fmt.Sprintf("%s/%s", c.kind, c.name)
-	c.groupKind = fmt.Sprintf("%s/%s", c.group, c.kind)
+	if c.group == "" { // 'core' group
+		c.groupKind = c.kind
+	} else {
+		c.groupKind = fmt.Sprintf("%s/%s", c.group, c.kind)
+	}
 	if c.isNamespaced {
 		c.namespacedName = fmt.Sprintf("%s/%s", c.namespace, c.name)
 		c.id = strings.ReplaceAll(fmt.Sprintf("%s_%s_%s", c.kind, c.namespace, c.name), "-", "_")
@@ -446,7 +461,7 @@ func outputDotGraph(s *State) {
 		fmt.Printf(dot_gatewayclass_template, gwc.id, gwc.name, params)
 		if gwc.parameters != nil {
 			p := gwc.parameters
-			fmt.Printf(dot_gatewayclassparams_template, p.id, p.group, p.kind, p.namespacedName, p.bodyHtml)
+			fmt.Printf(dot_gatewayclassparams_template, p.id, p.groupKind, p.namespacedName, p.bodyHtml)
 		}
 	}
 	fmt.Print("\t}\n")
@@ -491,10 +506,8 @@ func outputDotGraph(s *State) {
 	// Nodes, backends
 	fmt.Printf(dot_cluster_template, "cluster_backends")
 	for _, rt := range s.httpRtList {
-		for _, rules := range rt.raw.Spec.Rules {
-			for _, backend := range rules.BackendRefs {
-				fmt.Printf(dot_backend_template, strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.raw.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), Deref(backend.Kind, "Service"), Deref(backend.Namespace, gatewayv1b1.Namespace(rt.raw.ObjectMeta.Namespace)), backend.Name, "? endpoint(s)")
-			}
+		for _, backend := range rt.backends {
+			fmt.Printf(dot_backend_template, backend.id, backend.groupKind, backend.namespacedName, "? endpoint(s)")
 		}
 	}
 	fmt.Print("\t}\n")
@@ -525,21 +538,21 @@ func outputDotGraph(s *State) {
 				fmt.Printf("	%s -> Gateway_%s_%s\n", rt.id, strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
 			}
 		}
-		for _, rules := range rt.raw.Spec.Rules {
-			for _, backend := range rules.BackendRefs {
-				fmt.Printf("	backend_%s_%s -> %s\n", strings.ReplaceAll(string(Deref(backend.Namespace, gatewayv1b1.Namespace(rt.raw.ObjectMeta.Namespace))), "-", "_"), strings.ReplaceAll(string(backend.Name), "-", "_"), rt.id)
-			}
+		for _, backend := range rt.backends {
+			fmt.Printf("	%s -> %s\n", backend.id, rt.id)
 		}
 	}
 	// Edges, attached policies
 	for _, policy := range s.attachedPolicies {
-		fmt.Printf("\t%s -> %s\n", policy.id, policy.targetRef.id)
 		if policy.targetRef.kind == "Namespace" {  // Namespace policies
+			//fmt.Printf("\t%s -> %s\n", policy.id, policy.targetRef.id)
 			for _, gw := range s.gwList {
 				if gw.namespace == policy.targetRef.name && gw.class != nil { // no matching gatewayclass
-					fmt.Printf("	%s -> %s [style=dotted]\n", policy.id, gw.id)
+					fmt.Printf("	%s -> %s [style=dashed]\n", policy.id, gw.id)
 				}
 			}
+		} else {
+			fmt.Printf("\t%s -> %s\n", policy.id, policy.targetRef.id)
 		}
 	}
 	fmt.Print(dot_graph_template_footer)
@@ -723,24 +736,24 @@ func backendRef2String(be *gatewayv1b1.BackendRef) string {
 	return out
 }
 
-// func NamespacedNameOf(obj metav1.Object) types.NamespacedName {
-// 	name := types.NamespacedName{
-// 		Name:	   obj.GetName(),
-// 		Namespace: obj.GetNamespace(),
-// 	}
-
-// 	if name.Namespace == "" {
-// 		name.Namespace = metav1.NamespaceDefault
-// 	}
-
-// 	return name
-// }
-
 // Return true if targetref is to a namespaced resource
 func isNamespacedTargetRef(cl client.Client, tRef *gatewayv1a2.PolicyTargetReference) (bool, error) {
 	gk := schema.GroupKind{
 		Group: string(tRef.Group),
 		Kind:  string(tRef.Kind),
+	}
+	mapping, err := cl.RESTMapper().RESTMapping(gk)
+	if err != nil {
+		return false, err
+	}
+	return mapping.Scope.Name() ==  meta.RESTScopeNameNamespace, nil
+}
+
+// Return true if backendobjectref is to a namespaced resource
+func isNamespacedBackendObjectRef(cl client.Client, bRef *gatewayv1b1.BackendObjectReference) (bool, error) {
+	gk := schema.GroupKind{
+		Group: string(Deref(bRef.Group, "")),
+		Kind:  string(Deref(bRef.Kind, "Service")),
 	}
 	mapping, err := cl.RESTMapper().RESTMapping(gk)
 	if err != nil {
@@ -823,21 +836,45 @@ func getGatewayParameters(cl client.Client, dcl *dynamic.DynamicClient, gwc *Gat
 	return res, nil
 }
 
-func gv_node_template(resType, colour string) string {
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func gv_node_template(resType string, leftAlignBody bool, colourWheel int) string {
+	var colours = []string{"EF9A9A", "F48FB1", "CE93D8", "B39DDB", "9FA8DA", "90CAF9", "81D4FA",
+		"80DEEA", "80CBC4", "A5D6A7", "C5E1A5", "E6EE9C", "FFF59D", "FFE082", "FFCC80",
+		"FFAB91", "BCAAA4", "EEEEEE", "B0BEC5"}
 	var r, g, b uint8
 	shade := 0.8
+	light := 1.4
+
+	rand.Seed(9)
+	rand.Shuffle(len(colours), func(i, j int) { colours[i], colours[j] = colours[j], colours[i] })
+	colour := colours[colourWheel%len(colours)]
 	fmt.Sscanf(colour, "%02x%02x%02x", &r, &g, &b)
 	sr := uint8(float64(r)*shade)
 	sg := uint8(float64(g)*shade)
 	sb := uint8(float64(b)*shade)
+	lr := min(int(float64(r)*light), 255)
+	lg := min(int(float64(g)*light), 255)
+	lb := min(int(float64(b)*light), 255)
+	fillcolour := fmt.Sprintf("%02x%02x%02x", lr, lg, lb)
 	edgecolour := fmt.Sprintf("%02x%02x%02x", sr, sg, sb)
 
+	bodyAlign := ""
+	if leftAlignBody {
+		bodyAlign = ` align="left" balign="left"`
+	}
+
 	return `	%s [
-		fillcolor="#`+colour+`"
+		fillcolor="#`+fillcolour+`"
 		color="#`+edgecolour+`"
 		label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="4">
 			<tr> <td sides="B"> <b>`+resType+`</b><br/>%s</td> </tr>
-			<tr> <td sides="T">%s</td> </tr>
+			<tr> <td sides="T"`+bodyAlign+`>%s</td> </tr>
 		</table>>
 	]`+"\n"
 }
