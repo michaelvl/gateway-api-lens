@@ -5,7 +5,7 @@ API](https://gateway-api.sigs.k8s.i) configuration.
 
 The following example from
 [gateway-API](https://gateway-api.sigs.k8s.io) will be used to
-illustrate the different outputs generated:
+illustrate the different outputs formats generated:
 
 ![Gateway-API example](doc/images/gateway-roles.png)
 
@@ -15,9 +15,11 @@ illustrate the different outputs generated:
 $ gateway-api-lens -o graph  |  dot -Tsvg > output.svg
 ```
 
-The is an example where service policies (see
+This is an example where service policies (see
 [GEP-713](https://gateway-api.sigs.k8s.io/geps/gep-713)) are attached
-to both `GatewayClass` and `Gateway` resources:
+to both `GatewayClass` and `Gateway` resources as well as the
+namespace of the `Gateway` (such indirect attachments are shown with a
+dashed arrow):
 
 ![Example Graphviz output](doc/images/graphviz-output.png)
 
