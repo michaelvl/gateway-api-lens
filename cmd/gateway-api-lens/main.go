@@ -17,8 +17,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 
-	//corev1 "k8s.io/api/core/v1"
-	//"k8s.io/apimachinery/pkg/api/errors"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -45,10 +43,6 @@ import (
 	client "sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
-)
-
-var (
-	scheme = runtime.NewScheme()
 )
 
 const (
@@ -78,14 +72,23 @@ digraph gatewayapi_config {
 	dot_cluster_template = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
 )
 
-var colourWheel = 8
+var (
+	scheme = runtime.NewScheme()
 
-var dot_gatewayclass_template       = gv_node_template("GatewayClass", false, colourWheel)
-var dot_gatewayclassparams_template = gv_node_template("%s", true, colourWheel+1)
-var dot_gateway_template            = gv_node_template("Gateway", false, colourWheel+2)
-var dot_httproute_template          = gv_node_template("HTTPRoute", false, colourWheel+3)
-var dot_backend_template            = gv_node_template("%s", false, colourWheel+4)
-var dot_policy_template             = gv_node_template("%s", true, colourWheel+5)
+	// Common shift in colourtable of graph node colours
+	colourWheel = 8
+	dot_gatewayclass_template       = gv_node_template("GatewayClass", false, colourWheel)
+	dot_gatewayclassparams_template = gv_node_template("%s", true, colourWheel+1)
+	dot_gateway_template            = gv_node_template("Gateway", false, colourWheel+2)
+	dot_httproute_template          = gv_node_template("HTTPRoute", false, colourWheel+3)
+	dot_backend_template            = gv_node_template("%s", false, colourWheel+4)
+	dot_policy_template             = gv_node_template("%s", true, colourWheel+5)
+
+	// List of dotted-paths, e.g. 'spec.values' for values to show in graph output. Value must be of type map
+	gwClassParameterPaths GatewayClassParameterPaths
+)
+
+type GatewayClassParameterPaths []string
 
 type State struct {
 	cl                client.Client
@@ -183,6 +186,15 @@ type KubeObj interface {
 	GetObjectKind() schema.ObjectKind
 }
 
+func (i *GatewayClassParameterPaths) String() string {
+	return strings.Join(*i, ";")
+}
+
+func (p *GatewayClassParameterPaths) Set(value string) error {
+	*p = append(*p, value)
+	return nil
+}
+
 func main() {
 	log.Printf("version: %s\n", version.Version)
 
@@ -198,6 +210,7 @@ func main() {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
 	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree]")
+	flag.Var(&gwClassParameterPaths, "gwc-param-path", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
 	flag.Parse()
 
 	config, err := rest.InClusterConfig()
@@ -289,13 +302,15 @@ func main() {
 			if err != nil {
 				log.Printf("Cannot lookup GatewayClass parameter: %s\n", objref.kindNamespacedName)
 			} else {
-				body,found,err := unstructured.NestedMap(gwclass.rawParams.Object, "spec", "values")
-				if err != nil {
-					log.Fatalf("Cannot lookup GatewayClass parameter body: %w", err)
-				}
-				if found {
-					//delete(spec, "targetRef")
-					commonBodyTextProc(gwclass.parameters, body)
+				for _,path := range gwClassParameterPaths {
+					pl := strings.Split(path, ".")
+					bodySegment,found,err := unstructured.NestedMap(gwclass.rawParams.Object, pl...)
+					if err != nil {
+						log.Fatalf("Cannot lookup GatewayClass parameter body: %w", err)
+					}
+					if found {
+						commonBodyTextProc(gwclass.parameters, bodySegment)
+					}
 				}
 			}
 		}
@@ -436,13 +451,13 @@ func (s *State) gatewayclassByName(name string) *GatewayClass {
 	return nil
 }
 
+// Pretty-print `body` and append to `c.bodyHtml`
 func commonBodyTextProc(c *CommonObjRef, body map[string]any) {
 	b, err := yaml.Marshal(body)
 	if err != nil {
 		log.Fatalf("Cannot marshal resource body selection: %w", err)
 	}
 	c.bodyTxt = string(b)
-	c.bodyHtml = ""
 	for _,ln := range strings.Split(c.bodyTxt, "\n") {
 		if ln != "" {
 			c.bodyHtml += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
