@@ -85,10 +85,12 @@ var (
 	dot_policy_template             = gv_node_template("%s", true, colourWheel+5)
 
 	// List of dotted-paths, e.g. 'spec.values' for values to show in graph output. Value must be of type map
-	gwClassParameterPaths GatewayClassParameterPaths
-)
+	gwClassParameterPaths ArgStringSlice
 
-type GatewayClassParameterPaths []string
+	// List of dotted-paths, e.g. 'spec.values.foo' which should be obfuscated. Useful for demos to avoid spilling intimate values
+	paramObfuscateNumbersPaths ArgStringSlice
+	paramObfuscateCharsPaths ArgStringSlice
+)
 
 type State struct {
 	cl                client.Client
@@ -186,11 +188,11 @@ type KubeObj interface {
 	GetObjectKind() schema.ObjectKind
 }
 
-func (i *GatewayClassParameterPaths) String() string {
+type ArgStringSlice []string
+func (i *ArgStringSlice) String() string {
 	return strings.Join(*i, ";")
 }
-
-func (p *GatewayClassParameterPaths) Set(value string) error {
+func (p *ArgStringSlice) Set(value string) error {
 	*p = append(*p, value)
 	return nil
 }
@@ -211,6 +213,8 @@ func main() {
 	}
 	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree]")
 	flag.Var(&gwClassParameterPaths, "gwc-param-path", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
+	flag.Var(&paramObfuscateNumbersPaths, "obfuscate-numbers", "Dotted-path spec for values from GatewayClass parameters and attached policies where numbers should be obfuscated.")
+	flag.Var(&paramObfuscateCharsPaths, "obfuscate-chars", "Dotted-path spec for values from GatewayClass parameters and attached policies where characters should be obfuscated.")
 	flag.Parse()
 
 	config, err := rest.InClusterConfig()
@@ -453,6 +457,36 @@ func (s *State) gatewayclassByName(name string) *GatewayClass {
 
 // Pretty-print `body` and append to `c.bodyHtml`
 func commonBodyTextProc(c *CommonObjRef, body map[string]any) {
+	// Obfuscate
+	for _,path := range paramObfuscateNumbersPaths {
+		pl := strings.Split(path, ".")
+		val,found,_ := unstructured.NestedString(body, pl...)
+		if found {
+			newstr := ""
+			for _,r := range val {
+				if (r >= '0' && r <= '9') {
+					r = 'x'
+				}
+				newstr += string(r)
+			}
+			unstructured.SetNestedField(body, newstr, pl...)
+		}
+	}
+	for _,path := range paramObfuscateCharsPaths {
+		pl := strings.Split(path, ".")
+		val,found,_ := unstructured.NestedString(body, pl...)
+		if found {
+			newstr := ""
+			for _,r := range val {
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+					r = 'x'
+				}
+				newstr += string(r)
+			}
+			unstructured.SetNestedField(body, newstr, pl...)
+		}
+	}
+	// Pretty-print
 	b, err := yaml.Marshal(body)
 	if err != nil {
 		log.Fatalf("Cannot marshal resource body selection: %w", err)
