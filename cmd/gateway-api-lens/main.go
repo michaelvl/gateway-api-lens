@@ -206,11 +206,14 @@ func main() {
 
 	var kubeconfig *string
 	var outputFormat *string
+	//var namespace *string = PtrTo("")
+
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
 	} else {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
+	//namespace = flag.String("n", "namespace", "Limit resources to namespace")
 	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree]")
 	flag.Var(&gwClassParameterPaths, "gwc-param-path", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
 	flag.Var(&paramObfuscateNumbersPaths, "obfuscate-numbers", "Dotted-path spec for values from GatewayClass parameters and attached policies where numbers should be obfuscated.")

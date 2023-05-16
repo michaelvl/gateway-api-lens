@@ -9,13 +9,25 @@ illustrate the different outputs formats generated:
 
 ![Gateway-API example](doc/images/gateway-roles.png)
 
+Additionally, Gateway Blueprint and attached policies from the
+[Bifrost Gateway
+Controller](https://github.com/tv2-oss/bifrost-gateway-controller)
+will be used.
+
+See [Makefile.local](Makefile.local) for how to setup the example
+usecase.
+
 # Graphviz Graph Output
 
+To output the Gateway-API configuration on Graphviz dot format, with
+the path `spec.values.default` from the `GatewayClass` parameter
+resource also shown:
+
 ```bash
-$ gateway-api-lens -o graph  |  dot -Tsvg > output.svg
+$ gateway-api-lens -o graph --gwc-param-path spec.values.default  |  dot -Tsvg > output.svg
 ```
 
-This is an example where service policies (see
+In the example, policies (see
 [GEP-713](https://gateway-api.sigs.k8s.io/geps/gep-713)) are attached
 to both `GatewayClass` and `Gateway` resources as well as the
 namespace of the `Gateway` (such indirect attachments are shown with a
@@ -28,10 +40,10 @@ dashed arrow):
 ```bash
 $ gateway-api-lens -o policy
 
-NAMESPACE POLICY                                                   TARGET                        DEFAULT OVERRIDE
-          ACMEClusterServicePolicy/acmeclusterservicepolicy-sample GatewayClass/cloud-gw         No      Yes
-foo-infra ACMEServicePolicy/acmeservicepolicy-sample               Gateway/foo-infra/foo-gateway Yes     No
-foo-infra ACMEServicePolicy/acmeservicepolicy-sample2              GatewayClass/cloud-gw         Yes     No
+NAMESPACE POLICY                                                 TARGET                                   DEFAULT OVERRIDE
+          GatewayClassConfig/aws-alb-crossplane-internal-dev-env GatewayClass/aws-alb-crossplane-internal No      Yes
+          GatewayClassConfig/aws-alb-crossplane-public-dev-env   GatewayClass/aws-alb-crossplane-public   No      Yes
+          GatewayClassConfig/foo-infra-tenant-defaults           Namespace/foo-infra                      No      Yes
 ```
 
 # Hierarchy Format
@@ -39,15 +51,16 @@ foo-infra ACMEServicePolicy/acmeservicepolicy-sample2              GatewayClass/
 ```bash
 $ gateway-api-lens -o hierarchy
 
-RESOURCE                              CONFIGURATION
-GatewayClass cloud-gw
- └─ Gateway foo-infra/foo-gateway     web:HTTP/80 foo.example.com
+RESOURCE                                 CONFIGURATION
+GatewayClass aws-alb-crossplane-internal
+GatewayClass aws-alb-crossplane-public
+ └─ Gateway foo-infra/foo-gateway        web:HTTP/80 foo.example.com
      ├─ HTTPRoute foo-site/foo-site
-     │   ├─ match                     PathPrefix /site
-     │   └─ backends                  Service/foo-site/foo-site:80@1
+     │   ├─ match                        PathPrefix /site
+     │   └─ backends                     Service/foo-site/foo-site:80@1
      └─ HTTPRoute foo-store/foo-store
-         ├─ match                     PathPrefix /store
-         └─ backends                  Service/foo-store-v1:80@90 Service/foo-store-v2:80@10
+         ├─ match                        PathPrefix /store
+         └─ backends                     Service/foo-store-v1:80@90 Service/foo-store-v2:80@10
 ```
 
 # Route-tree Format
