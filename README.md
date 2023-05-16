@@ -40,10 +40,11 @@ dashed arrow):
 ```bash
 $ gateway-api-lens -o policy
 
-NAMESPACE POLICY                                                 TARGET                                   DEFAULT OVERRIDE
-          GatewayClassConfig/aws-alb-crossplane-internal-dev-env GatewayClass/aws-alb-crossplane-internal No      Yes
-          GatewayClassConfig/aws-alb-crossplane-public-dev-env   GatewayClass/aws-alb-crossplane-public   No      Yes
-          GatewayClassConfig/foo-infra-tenant-defaults           Namespace/foo-infra                      No      Yes
+NAMESPACE                         POLICY                                                 TARGET                                   DEFAULT OVERRIDE
+bifrost-gateway-controller-system GatewayClassConfig/aws-alb-crossplane-internal-dev-env GatewayClass/aws-alb-crossplane-internal No      Yes
+bifrost-gateway-controller-system GatewayClassConfig/aws-alb-crossplane-public-dev-env   GatewayClass/aws-alb-crossplane-public   No      Yes
+foo-infra                         GatewayClassConfig/foo-infra-tenant-defaults           Namespace/foo-infra                      No      Yes
+foo-infra                         GatewayConfig/foo-gateway-custom-acl                   Gateway/foo-infra/foo-gateway            No      Yes
 ```
 
 # Hierarchy Format

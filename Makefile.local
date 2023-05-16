@@ -60,6 +60,7 @@ deploy-bifrost-getting-started-usecase:
 	kubectl -n foo-store apply -f ${BIFROST_URL}/test-data/getting-started/app-foo-store-v2.yaml
 	kubectl -n foo-store apply -f ${BIFROST_URL}/test-data/getting-started/foo-store-httproute.yaml
 	curl -s ${BIFROST_URL}/hack/demo/namespace-gatewayclassconfig.yaml | CERTIFICATE_ARN=arn:xxx:yyy:123456 envsubst | kubectl apply -f -
+	kubectl apply -f ${BIFROST_URL}/hack/demo/user-gateway-acl.yaml
 
 .PHONY: example-graph
 example-graph:

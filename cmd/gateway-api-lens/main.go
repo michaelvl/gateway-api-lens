@@ -102,6 +102,7 @@ type State struct {
 	attachedPolicies  []Policy
 }
 
+// This is the print-friendly format we process all resources into
 type CommonObjRef struct {
 	name           string
 	namespace      string
@@ -174,9 +175,6 @@ type Policy struct {
 
 	// Policy targetRef read from unstructured
 	rawTargetRef *gatewayv1a2.PolicyTargetReference
-
-	// Whether the policy is namespaced
-	isNamespaced bool
 
 	// The unprocessed resource
 	raw *unstructured.Unstructured
