@@ -8,7 +8,8 @@ before:
     # you may remove this if you don't need go generate
     #- go generate ./...
 builds:
-  - env:
+  - main: cmd/gateway-api-lens
+    env:
       - CGO_ENABLED=0
     goos:
       - linux
