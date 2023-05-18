@@ -24,7 +24,14 @@ the path `spec.values.default` from the `GatewayClass` parameter
 resource also shown:
 
 ```bash
-$ gateway-api-lens -o graph --gwc-param-path spec.values.default  |  dot -Tsvg > output.svg
+$ gateway-api-lens -o graph --gwc-param-path spec.values  |  dot -Tsvg > output.svg
+```
+
+It is also possible to run the tool in a web-server mode, where the
+graph will available through HTTP on the specified port:
+
+```bash
+$ gateway-api-lens -o graph -l 8080
 ```
 
 In the example, policies (see

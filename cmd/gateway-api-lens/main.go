@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"math/rand"
@@ -55,11 +58,11 @@ digraph gatewayapi_config {
 		fillcolor=red
 		penwidth=3
 		pencolor="#00000044"
-		fontname="Helvetica,Arial,sans-serif"
+		fontname="Helvetica"
 	]
 	edge [
 		arrowsize=0.5
-		fontname="Helvetica,Arial,sans-serif"
+		fontname="Helvetica"
 		labeldistance=3
 		labelfontcolor="#00000080"
 		penwidth=2
@@ -90,11 +93,12 @@ var (
 	// List of dotted-paths, e.g. 'spec.values.foo' which should be obfuscated. Useful for demos to avoid spilling intimate values
 	paramObfuscateNumbersPaths ArgStringSlice
 	paramObfuscateCharsPaths ArgStringSlice
+
+	cl                client.Client
+	dcl               *dynamic.DynamicClient
 )
 
 type State struct {
-	cl                client.Client
-	dcl               *dynamic.DynamicClient
 	gwcList           []GatewayClass
 	gwList            []Gateway
 	httpRtList        []HTTPRoute
@@ -204,6 +208,7 @@ func main() {
 
 	var kubeconfig *string
 	var outputFormat *string
+	var listenPort *string
 	//var namespace *string = PtrTo("")
 
 	if home := homedir.HomeDir(); home != "" {
@@ -211,6 +216,7 @@ func main() {
 	} else {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
+	listenPort = flag.String("l", "", "port to run web server on and return graph output. Defaults to off")
 	//namespace = flag.String("n", "namespace", "Limit resources to namespace")
 	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree]")
 	flag.Var(&gwClassParameterPaths, "gwc-param-path", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
@@ -229,14 +235,66 @@ func main() {
 		}
 	}
 
-	cl, err := client.New(config, client.Options{
+	cl, err = client.New(config, client.Options{
 		Scheme: scheme,
 	})
 	if err != nil {
 		panic(err.Error())
 	}
-	dcl := dynamic.NewForConfigOrDie(config)
+	dcl = dynamic.NewForConfigOrDie(config)
 
+	state, err := collectResources(cl, dcl)
+
+	if *listenPort != "" {
+		http.HandleFunc("/", httpHandler)
+		log.Fatal(http.ListenAndServe(":"+string(*listenPort), nil))
+	} else {
+		switch *outputFormat {
+		case "policy":
+			outputTxtTablePolicyFocus(state)
+		case "graph":
+			var buf bytes.Buffer
+			outputDotGraph(&buf, state)
+			fmt.Print(buf.String())
+		case "hierarchy":
+			outputTxtClassHierarchy(state)
+		case "route-tree":
+			outputTxtRouteTree(state)
+			//outputTxtTableGatewayFocus(&state)
+		}
+	}
+}
+
+
+func httpHandler(w http.ResponseWriter, r *http.Request) {
+	state, err := collectResources(cl, dcl)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var buf bytes.Buffer
+	outputDotGraph(&buf, state)
+	
+	fmt.Fprintf(w, `
+<html><body>
+<script type="module">
+import { Graphviz } from "https://cdn.jsdelivr.net/npm/@hpcc-js/wasm/dist/index.js";
+
+const graphviz = await Graphviz.load();
+`)
+	fmt.Fprintf(w, "const dot = `%s`;\n", buf.String())
+	fmt.Fprintf(w, `
+const svg = graphviz.dot(dot);
+document.getElementById("gwapi").innerHTML = svg;
+</script>
+<div id="gwapi"></div>
+</body></head>`)
+}
+
+// FIXME: Improve error handling
+func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, error) {
+	var err error
 	gwcList := &gatewayv1b1.GatewayClassList{}
 	err = cl.List(context.TODO(), gwcList, client.InNamespace(""))
 
@@ -277,7 +335,7 @@ func main() {
 	//svcList := &corev1.ServiceList{}
 	//err = cl.List(context.TODO(), svcList, client.InNamespace(""))
 
-	state := State{cl, dcl, nil, nil, nil, ingressList, nil}
+	state := State{nil, nil, nil, ingressList, nil}
 
 	//
 	// Pre-process resources - common processing to make output
@@ -401,17 +459,7 @@ func main() {
 		state.attachedPolicies = append(state.attachedPolicies, pol)
 	}
 
-	switch *outputFormat {
-	case "policy":
-		outputTxtTablePolicyFocus(&state)
-	case "graph":
-		outputDotGraph(&state)
-	case "hierarchy":
-		outputTxtClassHierarchy(&state)
-	case "route-tree":
-		outputTxtRouteTree(&state)
-	//outputTxtTableGatewayFocus(&state)
-	}
+	return &state, nil
 }
 
 // Fill-in CommonObjRef fields from Kubernetes object
@@ -500,24 +548,24 @@ func commonBodyTextProc(c *CommonObjRef, body map[string]any) {
 	}
 }
 
-func outputDotGraph(s *State) {
+func outputDotGraph(w io.Writer, s *State) {
 
-	fmt.Print(dot_graph_template_header)
+	fmt.Fprint(w, dot_graph_template_header)
 
 	// Nodes, GatewayClasses and parameters
-	fmt.Printf(dot_cluster_template, "cluster_gwc")
+	fmt.Fprintf(w, dot_cluster_template, "cluster_gwc")
 	for _, gwc := range s.gwcList {
 		var params string = fmt.Sprintf("Controller:<br/>%s", gwc.raw.Spec.ControllerName)
-		fmt.Printf(dot_gatewayclass_template, gwc.id, gwc.name, params)
+		fmt.Fprintf(w, dot_gatewayclass_template, gwc.id, gwc.name, params)
 		if gwc.parameters != nil {
 			p := gwc.parameters
-			fmt.Printf(dot_gatewayclassparams_template, p.id, p.groupKind, p.namespacedName, p.bodyHtml)
+			fmt.Fprintf(w, dot_gatewayclassparams_template, p.id, p.groupKind, p.namespacedName, p.bodyHtml)
 		}
 	}
-	fmt.Print("\t}\n")
+	fmt.Fprint(w, "\t}\n")
 
 	// Nodes, Gateways
-	fmt.Printf(dot_cluster_template, "cluster_gw")
+	fmt.Fprintf(w, dot_cluster_template, "cluster_gw")
 	for _, gw := range s.gwList {
 		var params string
 		for idx, l := range gw.raw.Spec.Listeners {
@@ -531,12 +579,12 @@ func outputDotGraph(s *State) {
 				params = "<br/><i>(no hostname)</i>"
 			}
 		}
-		fmt.Printf(dot_gateway_template, gw.id, gw.namespacedName, params)
+		fmt.Fprintf(w, dot_gateway_template, gw.id, gw.namespacedName, params)
 	}
-	fmt.Print("\t}\n")
+	fmt.Fprint(w, "\t}\n")
 
 	// Nodes, HTTPRoutes
-	fmt.Printf(dot_cluster_template, "cluster_httproute")
+	fmt.Fprintf(w, dot_cluster_template, "cluster_httproute")
 	for _, rt := range s.httpRtList {
 		var params string
 		if rt.raw.Spec.Hostnames != nil {
@@ -549,33 +597,33 @@ func outputDotGraph(s *State) {
 		} else {
 			params = "<i>(no hostname)</i>"
 		}
-		fmt.Printf(dot_httproute_template, rt.id, rt.namespacedName, params)
+		fmt.Fprintf(w, dot_httproute_template, rt.id, rt.namespacedName, params)
 	}
-	fmt.Print("\t}\n")
+	fmt.Fprint(w, "\t}\n")
 
 	// Nodes, backends
-	fmt.Printf(dot_cluster_template, "cluster_backends")
+	fmt.Fprintf(w, dot_cluster_template, "cluster_backends")
 	for _, rt := range s.httpRtList {
 		for _, backend := range rt.backends {
-			fmt.Printf(dot_backend_template, backend.id, backend.groupKind, backend.namespacedName, "? endpoint(s)")
+			fmt.Fprintf(w, dot_backend_template, backend.id, backend.groupKind, backend.namespacedName, "? endpoint(s)")
 		}
 	}
-	fmt.Print("\t}\n")
+	fmt.Fprint(w, "\t}\n")
 
 	// Nodes, attached policies
 	for _, policy := range s.attachedPolicies {
-		fmt.Printf(dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.bodyHtml)
+		fmt.Fprintf(w, dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.bodyHtml)
 	}
 
 	// Edges
 	for _, gwc := range s.gwcList {
 		if gwc.parameters != nil {
-			fmt.Printf("\t%s -> %s\n", gwc.id, gwc.parameters.id)
+			fmt.Fprintf(w, "\t%s -> %s\n", gwc.id, gwc.parameters.id)
 		}
 	}
 	for _, gw := range s.gwList {
 		if gw.class != nil { // no matching gatewayclass
-			fmt.Printf("	%s -> %s\n", gw.id, gw.class.id)
+			fmt.Fprintf(w, "	%s -> %s\n", gw.id, gw.class.id)
 		}
 	}
 	for _, rt := range s.httpRtList {
@@ -585,27 +633,27 @@ func outputDotGraph(s *State) {
 				ns = string(*pref.Namespace)
 			}
 			if pref.Kind != nil && *pref.Kind == gatewayv1b1.Kind("Gateway") {
-				fmt.Printf("	%s -> Gateway_%s_%s\n", rt.id, strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
+				fmt.Fprintf(w, "	%s -> Gateway_%s_%s\n", rt.id, strings.ReplaceAll(ns, "-", "_"), strings.ReplaceAll(string(pref.Name), "-", "_"))
 			}
 		}
 		for _, backend := range rt.backends {
-			fmt.Printf("	%s -> %s\n", backend.id, rt.id)
+			fmt.Fprintf(w, "	%s -> %s\n", backend.id, rt.id)
 		}
 	}
 	// Edges, attached policies
 	for _, policy := range s.attachedPolicies {
 		if policy.targetRef.kind == "Namespace" {  // Namespace policies
-			//fmt.Printf("\t%s -> %s\n", policy.id, policy.targetRef.id)
+			//fmt.Fprintf(w, "\t%s -> %s\n", policy.id, policy.targetRef.id)
 			for _, gw := range s.gwList {
 				if gw.namespace == policy.targetRef.name && gw.class != nil { // no matching gatewayclass
-					fmt.Printf("	%s -> %s [style=dashed]\n", policy.id, gw.id)
+					fmt.Fprintf(w, "	%s -> %s [style=dashed]\n", policy.id, gw.id)
 				}
 			}
 		} else {
-			fmt.Printf("\t%s -> %s\n", policy.id, policy.targetRef.id)
+			fmt.Fprintf(w, "\t%s -> %s\n", policy.id, policy.targetRef.id)
 		}
 	}
-	fmt.Print(dot_graph_template_footer)
+	fmt.Fprint(w, dot_graph_template_footer)
 }
 
 func outputTxtTableGatewayFocus(s *State) {
