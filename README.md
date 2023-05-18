@@ -20,8 +20,8 @@ usecase.
 # Graphviz Graph Output
 
 To output the Gateway-API configuration on Graphviz dot format, with
-the path `spec.values.default` from the `GatewayClass` parameter
-resource also shown:
+the path `spec.values` from the `GatewayClass` parameter resource also
+shown:
 
 ```bash
 $ gateway-api-lens -o graph --gwc-param-path spec.values  |  dot -Tsvg > output.svg
