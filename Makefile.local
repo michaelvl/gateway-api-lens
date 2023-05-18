@@ -2,6 +2,11 @@
 default: all-setup
 
 #################
+.PHONY: build-snapshot
+build-snapshot:
+	HEAD_SHA=$(shell git rev-parse --short HEAD) goreleaser release --snapshot --clean --skip-publish
+
+#################
 .PHONY: all-setup
 all-setup: create-cluster deploy-gateway-api deploy-bifrost-crds deploy-bifrost-blueprint deploy-bifrost-getting-started-usecase
 
