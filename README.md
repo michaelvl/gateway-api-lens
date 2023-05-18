@@ -27,13 +27,6 @@ resource also shown:
 $ gateway-api-lens -o graph --gwc-param-path spec.values  |  dot -Tsvg > output.svg
 ```
 
-It is also possible to run the tool in a web-server mode, where the
-graph will available through HTTP on the specified port:
-
-```bash
-$ gateway-api-lens -o graph -l 8080
-```
-
 In the example, policies (see
 [GEP-713](https://gateway-api.sigs.k8s.io/geps/gep-713)) are attached
 to both `GatewayClass` and `Gateway` resources as well as the
@@ -41,6 +34,19 @@ namespace of the `Gateway` (such indirect attachments are shown with a
 dashed arrow):
 
 ![Example Graphviz output](doc/images/graphviz-output.png)
+
+It is also possible to run the tool in a web-server mode, where the
+graph will available through HTTP on the specified port:
+
+```bash
+$ gateway-api-lens -o graph -l 8080
+```
+
+The container-based version can be executed with:
+
+```bash
+docker run --rm -u $(id -u) -p 8080 -v $HOME/.kube:/kube:ro --network host ghcr.io/michaelvl/gateway-api-lens:latest -l 8080 --kubeconfig /kube/config
+```
 
 # Policies in Table Format
 
