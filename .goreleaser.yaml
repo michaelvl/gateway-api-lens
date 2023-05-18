@@ -32,6 +32,9 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
 
+source:
+  enabled: false
+
 release:
   mode: append
   footer: |
