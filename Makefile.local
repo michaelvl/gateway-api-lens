@@ -4,7 +4,7 @@ default: all-setup
 #################
 .PHONY: build-snapshot
 build-snapshot:
-	HEAD_SHA=$(shell git rev-parse --short HEAD) goreleaser release --snapshot --clean --skip-publish
+	HEAD_SHA=$(shell git rev-parse --short HEAD) goreleaser release --snapshot --clean --skip-publish --skip-sign
 
 #################
 .PHONY: all-setup
