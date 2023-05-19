@@ -48,6 +48,11 @@ The container-based version can be executed with:
 docker run --rm -u $(id -u) -p 8080 -v $HOME/.kube:/kube:ro --network host ghcr.io/michaelvl/gateway-api-lens:latest -l 8080 --kubeconfig /kube/config
 ```
 
+The argument `--network host` is only needed with a local cluster like
+KIND. Also note, that the container image only have the
+gateway-api-lens executable and does not work if your kubeconfig
+require additional auth binaries.
+
 # Policies in Table Format
 
 ```bash
