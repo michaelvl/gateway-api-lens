@@ -67,6 +67,15 @@ deploy-bifrost-getting-started-usecase:
 	curl -s ${BIFROST_URL}/hack/demo/namespace-gatewayclassconfig.yaml | CERTIFICATE_ARN=arn:xxx:yyy:123456 envsubst | kubectl apply -f -
 	kubectl apply -f ${BIFROST_URL}/hack/demo/user-gateway-acl.yaml
 
+#################
+ISTIO_VERSION ?= 1.17.2
+
+.PHONY: deploy-istio
+deploy-istio:
+	helm upgrade -i --repo https://istio-release.storage.googleapis.com/charts base base     --version ${ISTIO_VERSION} -n istio-system --create-namespace
+	helm upgrade -i --repo https://istio-release.storage.googleapis.com/charts istiod istiod --version ${ISTIO_VERSION} -n istio-system
+
+#################
 .PHONY: example-graph
 example-graph:
-	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values.default -o graph | dot -Tsvg > output.svg
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values -o graph | dot -Tsvg > output.svg

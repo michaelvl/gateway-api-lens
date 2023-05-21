@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
-	"math/rand"
 	"strings"
 	"text/tabwriter"
 
@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/set"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
@@ -43,6 +44,7 @@ import (
 	// _ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 
 	"github.com/michaelvl/gateway-api-lens/pkg/version"
+
 	client "sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -72,7 +74,8 @@ digraph gatewayapi_config {
 `
 	dot_graph_template_footer string = `}
 `
-	dot_cluster_template = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
+	dot_cluster_template_header = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
+	dot_cluster_template_footer = "\t}\n"
 )
 
 var (
@@ -93,6 +96,9 @@ var (
 	// List of dotted-paths, e.g. 'spec.values.foo' which should be obfuscated. Useful for demos to avoid spilling intimate values
 	paramObfuscateNumbersPaths ArgStringSlice
 	paramObfuscateCharsPaths ArgStringSlice
+
+	filterNamespaces     ArgStringSlice
+	filterControllerName ArgStringSlice
 
 	cl                client.Client
 	dcl               *dynamic.DynamicClient
@@ -209,7 +215,6 @@ func main() {
 	var kubeconfig *string
 	var outputFormat *string
 	var listenPort *string
-	//var namespace *string = PtrTo("")
 
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
@@ -217,7 +222,8 @@ func main() {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
 	listenPort = flag.String("l", "", "port to run web server on and return graph output. Defaults to off")
-	//namespace = flag.String("n", "namespace", "Limit resources to namespace")
+	flag.Var(&filterNamespaces, "namespace", "Limit resources to namespace(s). Can be specified multiple times. Default is to use all namespaces")
+	flag.Var(&filterControllerName, "controller-name", "Limit resources to those related to specific controller. Can be specified multiple times. Default is to use all controllers")
 	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree]")
 	flag.Var(&gwClassParameterPaths, "gwc-param-path", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
 	flag.Var(&paramObfuscateNumbersPaths, "obfuscate-numbers", "Dotted-path spec for values from GatewayClass parameters and attached policies where numbers should be obfuscated.")
@@ -459,6 +465,35 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 		state.attachedPolicies = append(state.attachedPolicies, pol)
 	}
 
+	// Apply filters - we deliberately do this on processed items to have access to processed fields
+	if len(filterControllerName) > 0 {
+		cnames := set.New(filterControllerName...)
+		var newGwcList []GatewayClass
+		for _, gwc := range state.gwcList {
+			if cnames.Has(string(gwc.controllerName)) {
+				newGwcList = append(newGwcList, gwc)
+			}
+		}
+		state.gwcList = newGwcList
+	}
+	if len(filterNamespaces) > 0 {
+		cnames := set.New(filterNamespaces...)
+		var newGwList []Gateway
+		for _, gw := range state.gwList {
+			if cnames.Has(string(gw.namespace)) {
+				newGwList = append(newGwList, gw)
+			}
+		}
+		state.gwList = newGwList
+		var newhttpRtList []HTTPRoute
+		for _, rt := range state.httpRtList {
+			if cnames.Has(string(rt.namespace)) {
+				newhttpRtList = append(newhttpRtList, rt)
+			}
+		}
+		state.httpRtList = newhttpRtList
+	}
+
 	return &state, nil
 }
 
@@ -553,7 +588,7 @@ func outputDotGraph(w io.Writer, s *State) {
 	fmt.Fprint(w, dot_graph_template_header)
 
 	// Nodes, GatewayClasses and parameters
-	fmt.Fprintf(w, dot_cluster_template, "cluster_gwc")
+	fmt.Fprintf(w, dot_cluster_template_header, "cluster_gwc")
 	for _, gwc := range s.gwcList {
 		var params string = fmt.Sprintf("Controller:<br/>%s", gwc.raw.Spec.ControllerName)
 		fmt.Fprintf(w, dot_gatewayclass_template, gwc.id, gwc.name, params)
@@ -562,10 +597,10 @@ func outputDotGraph(w io.Writer, s *State) {
 			fmt.Fprintf(w, dot_gatewayclassparams_template, p.id, p.groupKind, p.namespacedName, p.bodyHtml)
 		}
 	}
-	fmt.Fprint(w, "\t}\n")
+	fmt.Fprint(w, dot_cluster_template_footer)
 
 	// Nodes, Gateways
-	fmt.Fprintf(w, dot_cluster_template, "cluster_gw")
+	fmt.Fprintf(w, dot_cluster_template_header, "cluster_gw")
 	for _, gw := range s.gwList {
 		var params string
 		for idx, l := range gw.raw.Spec.Listeners {
@@ -581,10 +616,10 @@ func outputDotGraph(w io.Writer, s *State) {
 		}
 		fmt.Fprintf(w, dot_gateway_template, gw.id, gw.namespacedName, params)
 	}
-	fmt.Fprint(w, "\t}\n")
+	fmt.Fprint(w, dot_cluster_template_footer)
 
 	// Nodes, HTTPRoutes
-	fmt.Fprintf(w, dot_cluster_template, "cluster_httproute")
+	fmt.Fprintf(w, dot_cluster_template_header, "cluster_httproute")
 	for _, rt := range s.httpRtList {
 		var params string
 		if rt.raw.Spec.Hostnames != nil {
@@ -599,16 +634,16 @@ func outputDotGraph(w io.Writer, s *State) {
 		}
 		fmt.Fprintf(w, dot_httproute_template, rt.id, rt.namespacedName, params)
 	}
-	fmt.Fprint(w, "\t}\n")
+	fmt.Fprint(w, dot_cluster_template_footer)
 
 	// Nodes, backends
-	fmt.Fprintf(w, dot_cluster_template, "cluster_backends")
+	fmt.Fprintf(w, dot_cluster_template_header, "cluster_backends")
 	for _, rt := range s.httpRtList {
 		for _, backend := range rt.backends {
 			fmt.Fprintf(w, dot_backend_template, backend.id, backend.groupKind, backend.namespacedName, "? endpoint(s)")
 		}
 	}
-	fmt.Fprint(w, "\t}\n")
+	fmt.Fprint(w, dot_cluster_template_footer)
 
 	// Nodes, attached policies
 	for _, policy := range s.attachedPolicies {
@@ -688,7 +723,7 @@ func outputTxtClassHierarchy(s *State) {
 	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
 	fmt.Fprintln(t, "RESOURCE\tCONFIGURATION")
 	for _, gwc := range s.gwcList {
-		fmt.Fprintf(t, "GatewayClass %s\t\n", gwc.name)
+		fmt.Fprintf(t, "GatewayClass %s\tcontroller:%s\n", gwc.name, gwc.controllerName)
 		for _, gw := range s.gwList {
 			if gw.class.id != gwc.id {
 				continue
@@ -768,6 +803,13 @@ func Deref[T any](ptr *T, deflt T) T {
 
 func PtrTo[T any](val T) *T {
 	return &val
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func unstructured2TargetRef(us unstructured.Unstructured) (*gatewayv1a2.PolicyTargetReference, error) {
@@ -932,13 +974,6 @@ func getGatewayParameters(cl client.Client, dcl *dynamic.DynamicClient, gwc *Gat
 		return nil, err
 	}
 	return res, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func gv_node_template(resType string, leftAlignBody bool, colourWheel int) string {
