@@ -53,6 +53,13 @@ KIND. Also note, that the container image only have the
 gateway-api-lens executable and does not work if your kubeconfig
 require additional auth binaries.
 
+Controller-name and namespace filters can be passed as part of the
+query-string:
+
+```
+http://localhost:8080/?controller-name=github.com/tv2-oss/bifrost-gateway-controller&namespace=foo-infra&namespace=foo-site
+```
+
 # Policies in Table Format
 
 ```bash

@@ -273,6 +273,10 @@ func main() {
 
 
 func httpHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	filterNamespaces = q["namespace"]
+	filterControllerName = q["controller-name"]
+
 	state, err := collectResources(cl, dcl)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
