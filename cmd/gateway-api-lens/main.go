@@ -74,8 +74,6 @@ digraph gatewayapi_config {
 `
 	dot_graph_template_footer string = `}
 `
-	dot_cluster_template_header = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
-	dot_cluster_template_footer = "\t}\n"
 )
 
 var (
@@ -89,6 +87,9 @@ var (
 	dot_httproute_template          = gv_node_template("HTTPRoute", false, colourWheel+3)
 	dot_backend_template            = gv_node_template("%s", false, colourWheel+4)
 	dot_policy_template             = gv_node_template("%s", true, colourWheel+5)
+
+	dot_cluster_template_header     = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
+	dot_cluster_template_footer     = "\t}\n"
 
 	// List of dotted-paths, e.g. 'spec.values' for values to show in graph output. Value must be of type map
 	gwClassParameterPaths ArgStringSlice
@@ -215,6 +216,7 @@ func main() {
 	var kubeconfig *string
 	var outputFormat *string
 	var listenPort *string
+	var skipClustering bool
 
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
@@ -228,7 +230,13 @@ func main() {
 	flag.Var(&gwClassParameterPaths, "gwc-param-path", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
 	flag.Var(&paramObfuscateNumbersPaths, "obfuscate-numbers", "Dotted-path spec for values from GatewayClass parameters and attached policies where numbers should be obfuscated.")
 	flag.Var(&paramObfuscateCharsPaths, "obfuscate-chars", "Dotted-path spec for values from GatewayClass parameters and attached policies where characters should be obfuscated.")
+	flag.BoolVar(&skipClustering, "skip-clustering", false, "Skip clustering in graph output.")
 	flag.Parse()
+
+	if skipClustering {
+		dot_cluster_template_header     = "\t# %s\n"
+		dot_cluster_template_footer     = "\n"
+	}
 
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -259,9 +267,7 @@ func main() {
 		case "policy":
 			outputTxtTablePolicyFocus(state)
 		case "graph":
-			var buf bytes.Buffer
-			outputDotGraph(&buf, state)
-			fmt.Print(buf.String())
+			outputDotGraph(os.Stdout, state)
 		case "hierarchy":
 			outputTxtClassHierarchy(state)
 		case "route-tree":
@@ -285,7 +291,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 
 	var buf bytes.Buffer
 	outputDotGraph(&buf, state)
-	
+
 	fmt.Fprintf(w, `
 <html><body>
 <script type="module">
@@ -320,6 +326,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 	// Attached Policies, see https://gateway-api.sigs.k8s.io/geps/gep-713
 	attachedPolicies := []unstructured.Unstructured{}
 	crdResource := schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
+	// This label identifies policy resources: https://gateway-api.sigs.k8s.io/geps/gep-713/#kubectl-plugin
 	labSel, _ := labels.Parse("gateway.networking.k8s.io/policy=true")
 	crdDefList, err := dcl.Resource(crdResource).List(context.TODO(), metav1.ListOptions{LabelSelector: labSel.String()})
 	if err != nil {
@@ -463,6 +470,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 			log.Fatalf("Cannot lookup policy spec: %w", err)
 		}
 		if found {
+			// Delete 'targetRef' from spec before rendering BodyText, i.e. it will hold default/override only
 			delete(spec, "targetRef")
 			commonBodyTextProc(&pol.CommonObjRef, spec)
 		}
