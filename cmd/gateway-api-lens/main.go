@@ -487,6 +487,13 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 			}
 		}
 		state.gwcList = newGwcList
+		var newGwList []Gateway
+		for _, gw := range state.gwList {
+			if cnames.Has(string(gw.class.controllerName)) {
+				newGwList = append(newGwList, gw)
+			}
+		}
+		state.gwList = newGwList
 	}
 	if len(filterNamespaces) > 0 {
 		cnames := set.New(filterNamespaces...)
