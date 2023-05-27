@@ -87,17 +87,24 @@ var (
 	dot_httproute_template          = gv_node_template("HTTPRoute", false, colourWheel+3)
 	dot_backend_template            = gv_node_template("%s", false, colourWheel+4)
 	dot_policy_template             = gv_node_template("%s", true, colourWheel+5)
+	dot_effpolicy_template          = gv_node_template("Effective policy", true, colourWheel+7)
 
 	dot_cluster_template_header     = "\tsubgraph %s {\n\trankdir = TB\n\tcolor=none\n"
 	dot_cluster_template_footer     = "\t}\n"
 
 	// List of dotted-paths, e.g. 'spec.values' for values to show in graph output. Value must be of type map
-	gwClassParameterPaths ArgStringSlice
+	gwClassParameterPath *string
 
 	// List of dotted-paths, e.g. 'spec.values.foo' which should be obfuscated. Useful for demos to avoid spilling intimate values
 	paramObfuscateNumbersPaths ArgStringSlice
 	paramObfuscateCharsPaths ArgStringSlice
 
+	kubeconfig           *string
+	outputFormat         *string
+	listenPort           *string
+	skipClustering       bool
+	showEffectivePolicy  bool
+	useGatewayClassParamAsPolicy bool
 	filterNamespaces     ArgStringSlice
 	filterControllerName ArgStringSlice
 
@@ -142,6 +149,9 @@ type CommonObjRef struct {
 	// Marshalled YAML of body section (typically 'spec')
 	bodyTxt string
 	bodyHtml string
+
+	// Effective policy, i.e. merged according to precedence rules
+	effPolicy      *EffectivePolicy
 }
 
 // Processed information for GatewayClass resources
@@ -149,13 +159,20 @@ type GatewayClass struct {
 	CommonObjRef
 
 	controllerName   string
-	parameters       *CommonObjRef
+	parameters       *GatewayClassParameters
 
 	// The unprocessed resource
 	raw *gatewayv1b1.GatewayClass
 
 	// The unprocessed parameters
 	rawParams *unstructured.Unstructured
+}
+
+// Processed information for GatewayClass resources
+type GatewayClassParameters struct {
+	CommonObjRef
+
+	data map[string]any
 }
 
 // Processed information for Gateway resources
@@ -184,11 +201,22 @@ type Policy struct {
 
 	targetRef    *CommonObjRef
 
+	spec         map[string]any
+
 	// Policy targetRef read from unstructured
 	rawTargetRef *gatewayv1a2.PolicyTargetReference
 
 	// The unprocessed resource
 	raw *unstructured.Unstructured
+}
+
+type EffectivePolicy struct {
+	// Policy data
+	data map[string]any
+
+	// Marshalled YAML of data
+	bodyTxt string
+	bodyHtml string
 }
 
 type KubeObj interface {
@@ -213,11 +241,6 @@ func main() {
 	utilruntime.Must(gatewayv1b1.AddToScheme(scheme))
 	utilruntime.Must(apiextensions.AddToScheme(scheme))
 
-	var kubeconfig *string
-	var outputFormat *string
-	var listenPort *string
-	var skipClustering bool
-
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
 	} else {
@@ -226,11 +249,15 @@ func main() {
 	listenPort = flag.String("l", "", "port to run web server on and return graph output. Defaults to off")
 	flag.Var(&filterNamespaces, "namespace", "Limit resources to namespace(s). Can be specified multiple times. Default is to use all namespaces")
 	flag.Var(&filterControllerName, "controller-name", "Limit resources to those related to specific controller. Can be specified multiple times. Default is to use all controllers")
-	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree]")
-	flag.Var(&gwClassParameterPaths, "gwc-param-path", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
+	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree|gateways]")
+	gwClassParameterPath = flag.String("gwc-param-path", "", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
+	flag.BoolVar(&useGatewayClassParamAsPolicy, "use-gatewaylass-param-as-policy", true, "Use GatewayClass parameters as if they where a policy using path given by `gwc-param-path` as policy `spec`.")
+
 	flag.Var(&paramObfuscateNumbersPaths, "obfuscate-numbers", "Dotted-path spec for values from GatewayClass parameters and attached policies where numbers should be obfuscated.")
 	flag.Var(&paramObfuscateCharsPaths, "obfuscate-chars", "Dotted-path spec for values from GatewayClass parameters and attached policies where characters should be obfuscated.")
 	flag.BoolVar(&skipClustering, "skip-clustering", false, "Skip clustering in graph output.")
+	flag.BoolVar(&showEffectivePolicy, "show-effective-policy", false, "Show combined policy for resources.")
+
 	flag.Parse()
 
 	if skipClustering {
@@ -272,7 +299,8 @@ func main() {
 			outputTxtClassHierarchy(state)
 		case "route-tree":
 			outputTxtRouteTree(state)
-			//outputTxtTableGatewayFocus(&state)
+		case "gateways":
+			outputTxtTableGatewayFocus(os.Stdout, state)
 		}
 	}
 }
@@ -282,6 +310,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filterNamespaces = q["namespace"]
 	filterControllerName = q["controller-name"]
+	_, showEffectivePolicy = q["show-effective-policy"]
 
 	state, err := collectResources(cl, dcl)
 	if err != nil {
@@ -359,38 +388,83 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 	// functions simpler by e.g. pre-formatting strings
 	//
 
+	// Pre-process policy resource
+	for _, policy := range attachedPolicies {
+		pol := Policy{}
+		pol.raw = policy.DeepCopy()
+		_, isNamespaced, err := unstructured2gvr(cl, &policy)
+		if err != nil {
+			log.Fatalf("Cannot lookup GVR of %+v: %w", policy, err)
+		}
+		commonPreProc(&pol.CommonObjRef, &policy, isNamespaced, nil)
+		pol.rawTargetRef, err = unstructured2TargetRef(policy)
+		if err != nil {
+			log.Fatalf("Cannot convert policy to targetRef: %w", err)
+		}
+		targetIsNamespaced, err := isNamespacedTargetRef(cl, pol.rawTargetRef)
+		if err != nil {
+			log.Fatalf("Cannot lookup namespace scope for targetRef %+v, policy %+v", pol.rawTargetRef, policy)
+		}
+		objref := &CommonObjRef{}
+		objref.name = string(pol.rawTargetRef.Name)
+		objref.kind = string(pol.rawTargetRef.Kind)
+		objref.group = string(pol.rawTargetRef.Group)
+		if targetIsNamespaced {
+			objref.isNamespaced = true
+			objref.namespace = string(*pol.rawTargetRef.Namespace)
+		} else {
+			objref.isNamespaced = false
+		}
+		commonObjRefPreProc(objref)
+		pol.targetRef = objref
+		spec,found,err := unstructured.NestedMap(policy.Object, "spec")
+		if err != nil {
+			log.Fatalf("Cannot lookup policy spec: %w", err)
+		}
+		if found {
+			// Delete 'targetRef' from spec before rendering BodyText, i.e. it will hold default/override only
+			delete(spec, "targetRef")
+			bodyTxt, bodyHtml := commonBodyTextProc(spec)
+			c := &pol.CommonObjRef
+			c.bodyTxt = bodyTxt
+			c.bodyHtml += bodyHtml
+			pol.spec = spec
+		}
+		state.attachedPolicies = append(state.attachedPolicies, pol)
+	}
+
 	// Pre-process GatewayClass resources
 	for _, gwc := range gwcList.Items {
 		gwclass := GatewayClass{}
-		commonPreProc(&gwclass.CommonObjRef, &gwc, false)
+		commonPreProc(&gwclass.CommonObjRef, &gwc, false, state.attachedPolicies)
 		gwclass.raw = gwc.DeepCopy()
 		gwclass.controllerName = string(gwc.Spec.ControllerName)
 		if gwc.Spec.ParametersRef != nil {
-			objref := &CommonObjRef{}
-			objref.name = gwc.Spec.ParametersRef.Name
-			objref.kind = string(gwc.Spec.ParametersRef.Kind)
-			objref.group = string(gwc.Spec.ParametersRef.Group)
+			params := &GatewayClassParameters{}
+			params.name = gwc.Spec.ParametersRef.Name
+			params.kind = string(gwc.Spec.ParametersRef.Kind)
+			params.group = string(gwc.Spec.ParametersRef.Group)
 			if gwc.Spec.ParametersRef.Namespace != nil {
-				objref.isNamespaced = true
-				objref.namespace = string(*gwc.Spec.ParametersRef.Namespace)
+				params.isNamespaced = true
+				params.namespace = string(*gwc.Spec.ParametersRef.Namespace)
 			} else {
-				objref.isNamespaced = false
+				params.isNamespaced = false
 			}
-			commonObjRefPreProc(objref)
-			gwclass.parameters = objref
+			commonObjRefPreProc(&params.CommonObjRef)
+			gwclass.parameters = params
 			gwclass.rawParams, err = getGatewayParameters(cl, dcl, &gwclass)
 			if err != nil {
-				log.Printf("Cannot lookup GatewayClass parameter: %s\n", objref.kindNamespacedName)
+				log.Printf("Cannot lookup GatewayClass parameter: %s\n", params.kindNamespacedName)
 			} else {
-				for _,path := range gwClassParameterPaths {
-					pl := strings.Split(path, ".")
-					bodySegment,found,err := unstructured.NestedMap(gwclass.rawParams.Object, pl...)
-					if err != nil {
-						log.Fatalf("Cannot lookup GatewayClass parameter body: %w", err)
-					}
-					if found {
-						commonBodyTextProc(gwclass.parameters, bodySegment)
-					}
+				pl := strings.Split(*gwClassParameterPath, ".")
+				data,found,err := unstructured.NestedMap(gwclass.rawParams.Object, pl...)
+				if err != nil {
+					log.Fatalf("Cannot lookup GatewayClass parameter body: %w", err)
+				}
+				if found {
+					params.bodyTxt, params.bodyHtml = commonBodyTextProc(data)
+					params.data = data
+
 				}
 			}
 		}
@@ -400,16 +474,17 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 	// Pre-process Gateway resources
 	for _, gw := range gwList.Items {
 		g := Gateway{}
-		commonPreProc(&g.CommonObjRef, &gw, true)
+		commonPreProc(&g.CommonObjRef, &gw, true, state.attachedPolicies)
 		g.raw = gw.DeepCopy()
 		g.class = state.gatewayclassByName(string(gw.Spec.GatewayClassName))
+		calculateEffectivePolicy(&g, state.attachedPolicies)
 		state.gwList = append(state.gwList, g)
 	}
 
 	// Pre-process HTTPRoute resources
 	for _, rt := range httpRtList.Items {
 		r := HTTPRoute{}
-		commonPreProc(&r.CommonObjRef, &rt, true)
+		commonPreProc(&r.CommonObjRef, &rt, true, state.attachedPolicies)
 		for _, rules := range rt.Spec.Rules {
 			for _, backend := range rules.BackendRefs {
 				objref := &CommonObjRef{}
@@ -433,48 +508,6 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 
 		r.raw = rt.DeepCopy()
 		state.httpRtList = append(state.httpRtList, r)
-	}
-
-	// Pre-process policy resource
-	for _, policy := range attachedPolicies {
-		pol := Policy{}
-		pol.raw = policy.DeepCopy()
-		_, isNamespaced, err := unstructured2gvr(cl, &policy)
-		if err != nil {
-			log.Fatalf("Cannot lookup GVR of %+v: %w", policy, err)
-		}
-		commonPreProc(&pol.CommonObjRef, &policy, isNamespaced)
-		pol.rawTargetRef, err = unstructured2TargetRef(policy)
-		if err != nil {
-			log.Fatalf("Cannot convert policy to targetRef: %w", err)
-		}
-		targetIsNamespaced, err := isNamespacedTargetRef(cl, pol.rawTargetRef)
-		if err != nil {
-			log.Fatalf("Cannot lookup namespace scope for targetRef %+v, policy %+v", pol.rawTargetRef, policy)
-		}
-		objref := &CommonObjRef{}
-		objref.name = string(pol.rawTargetRef.Name)
-		objref.kind = string(pol.rawTargetRef.Kind)
-		objref.group = string(pol.rawTargetRef.Group)
-		if targetIsNamespaced {
-			objref.isNamespaced = true
-			objref.namespace = string(*pol.rawTargetRef.Namespace)
-		} else {
-			objref.isNamespaced = false
-		}
-		commonObjRefPreProc(objref)
-		pol.targetRef = objref
-		//
-		spec,found,err := unstructured.NestedMap(policy.Object, "spec")
-		if err != nil {
-			log.Fatalf("Cannot lookup policy spec: %w", err)
-		}
-		if found {
-			// Delete 'targetRef' from spec before rendering BodyText, i.e. it will hold default/override only
-			delete(spec, "targetRef")
-			commonBodyTextProc(&pol.CommonObjRef, spec)
-		}
-		state.attachedPolicies = append(state.attachedPolicies, pol)
 	}
 
 	// Apply filters - we deliberately do this on processed items to have access to processed fields
@@ -517,7 +550,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 }
 
 // Fill-in CommonObjRef fields from Kubernetes object
-func commonPreProc(c *CommonObjRef, obj KubeObj, isNamespaced bool) {
+func commonPreProc(c *CommonObjRef, obj KubeObj, isNamespaced bool, policies []Policy) {
 	c.name = obj.GetName()
 	c.isNamespaced = isNamespaced
 	if isNamespaced {
@@ -559,7 +592,7 @@ func (s *State) gatewayclassByName(name string) *GatewayClass {
 }
 
 // Pretty-print `body` and append to `c.bodyHtml`
-func commonBodyTextProc(c *CommonObjRef, body map[string]any) {
+func commonBodyTextProc(body map[string]any) (string, string) {
 	// Obfuscate
 	for _,path := range paramObfuscateNumbersPaths {
 		pl := strings.Split(path, ".")
@@ -594,12 +627,84 @@ func commonBodyTextProc(c *CommonObjRef, body map[string]any) {
 	if err != nil {
 		log.Fatalf("Cannot marshal resource body selection: %w", err)
 	}
-	c.bodyTxt = string(b)
-	for _,ln := range strings.Split(c.bodyTxt, "\n") {
+	bodyTxt := string(b)
+	bodyHtml := ""
+ 	for _,ln := range strings.Split(bodyTxt, "\n") {
 		if ln != "" {
-			c.bodyHtml += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
+			bodyHtml += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
 		}
 	}
+	return bodyTxt, bodyHtml
+}
+
+// Deep map merge, with 'b' overwriting values in 'a'.  On type conflicts precedence is given to 'a' i.e. no overwrite
+// x and y are concrete versions of a and b
+func merge(a, b any) any {
+	switch x := a.(type) {
+	case map[string]any:
+		y, ok := b.(map[string]any)
+		if !ok {
+			return a
+		}
+		for k, vy := range y { // Copy from 'b' (represented by 'y') into 'a'
+			if va, ok := x[k]; ok {
+				x[k] = merge(va, vy)
+			} else {
+				x[k] = vy
+			}
+		}
+	default:
+		return b
+	}
+	return a
+}
+
+func calculateEffectivePolicy(gw *Gateway, allPolicies []Policy) {
+	var policies []Policy
+
+	// FIXME: Consider to apply conflict resolution on policies
+
+	selectPolicy := func(isAttached func(policy Policy, gw *Gateway)bool) {
+		for _, p := range(allPolicies) {
+			if isAttached(p, gw) {
+				policies = append(policies, p)
+			}
+		}
+	}
+
+	// Policies attached to GatewayClass of Gateway
+	selectPolicy(func(policy Policy, gw *Gateway)bool { return policy.targetRef.kindNamespacedName == gw.class.kindNamespacedName })
+
+	// Policies attached to Gateway namespace
+	selectPolicy(func(policy Policy, gw *Gateway)bool { return policy.targetRef.kind == "Namespace" && policy.targetRef.name == gw.namespace })
+
+	// Policies attached to Gateway
+	selectPolicy(func(policy Policy, gw *Gateway)bool { return policy.targetRef.kindNamespacedName == gw.kindNamespacedName })
+
+	p := EffectivePolicy{}
+	data := map[string]any{}
+
+	if useGatewayClassParamAsPolicy && gwClassParameterPath != nil {
+		data = gw.class.parameters.data
+	}
+
+	// overrides settings operate in a "less specific beats more specific" fashion
+	for _, p := range policies {
+		if pdef, found := p.spec["default"]; found {
+			data = merge(data, pdef).(map[string]any)
+		}
+	}
+
+	// defaults settings operate in a "more specific beats less specific" fashion
+	for idx := len(policies)-1; idx >= 0; idx-- {
+		p := policies[idx]
+		if pdef, found := p.spec["override"]; found {
+			data = merge(data, pdef).(map[string]any)
+		}
+	}
+
+	p.bodyTxt, p.bodyHtml = commonBodyTextProc(data)
+	gw.effPolicy = &p
 }
 
 func outputDotGraph(w io.Writer, s *State) {
@@ -611,6 +716,9 @@ func outputDotGraph(w io.Writer, s *State) {
 	for _, gwc := range s.gwcList {
 		var params string = fmt.Sprintf("Controller:<br/>%s", gwc.raw.Spec.ControllerName)
 		fmt.Fprintf(w, dot_gatewayclass_template, gwc.id, gwc.name, params)
+		if showEffectivePolicy && gwc.effPolicy != nil {
+			fmt.Fprintf(w, dot_effpolicy_template, gwc.id+"_effpolicy", "", gwc.effPolicy.bodyHtml)
+		}
 		if gwc.parameters != nil {
 			p := gwc.parameters
 			fmt.Fprintf(w, dot_gatewayclassparams_template, p.id, p.groupKind, p.namespacedName, p.bodyHtml)
@@ -634,6 +742,9 @@ func outputDotGraph(w io.Writer, s *State) {
 			}
 		}
 		fmt.Fprintf(w, dot_gateway_template, gw.id, gw.namespacedName, params)
+		if showEffectivePolicy && gw.effPolicy != nil {
+			fmt.Fprintf(w, dot_effpolicy_template, gw.id+"_effpolicy", "", gw.effPolicy.bodyHtml)
+		}
 	}
 	fmt.Fprint(w, dot_cluster_template_footer)
 
@@ -671,6 +782,9 @@ func outputDotGraph(w io.Writer, s *State) {
 
 	// Edges
 	for _, gwc := range s.gwcList {
+		//if showEffectivePolicy {
+		//	fmt.Fprintf(w, "	%s -> %s\n", gwc.id+"_effpolicy", gwc.id)
+		//}
 		if gwc.parameters != nil {
 			fmt.Fprintf(w, "\t%s -> %s\n", gwc.id, gwc.parameters.id)
 		}
@@ -678,6 +792,9 @@ func outputDotGraph(w io.Writer, s *State) {
 	for _, gw := range s.gwList {
 		if gw.class != nil { // no matching gatewayclass
 			fmt.Fprintf(w, "	%s -> %s\n", gw.id, gw.class.id)
+			if showEffectivePolicy {
+				fmt.Fprintf(w, "	%s -> %s\n", gw.id+"_effpolicy", gw.id)
+			}
 		}
 	}
 	for _, rt := range s.httpRtList {
@@ -708,9 +825,6 @@ func outputDotGraph(w io.Writer, s *State) {
 		}
 	}
 	fmt.Fprint(w, dot_graph_template_footer)
-}
-
-func outputTxtTableGatewayFocus(s *State) {
 }
 
 func outputTxtTablePolicyFocus(s *State) {
@@ -808,6 +922,18 @@ func outputTxtRouteTree(s *State) {
 					break // Only one parent ref for each gw
 				}
 			}
+		}
+	}
+	t.Flush()
+}
+
+func outputTxtTableGatewayFocus(w io.Writer, s *State) {
+	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
+	fmt.Fprintln(t, "GATEWAY\tCONFIGURATION")
+	for _, gw := range s.gwList {
+		fmt.Fprintf(t, "%s\n", gw.namespacedName)
+		if gw.effPolicy != nil {
+			fmt.Fprintf(t, "%s\n", gw.effPolicy.bodyTxt)
 		}
 	}
 	t.Flush()

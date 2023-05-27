@@ -60,6 +60,13 @@ query-string:
 http://localhost:8080/?controller-name=github.com/tv2-oss/bifrost-gateway-controller&namespace=foo-infra&namespace=foo-site
 ```
 
+## Effective Policies
+
+By passing `--show-effective-policy`, the graph will be augmented with
+the effective policy (the result of merging all attached policies):
+
+![Effective policies](doc/images/effective-policies.png)
+
 # Policies in Table Format
 
 ```bash

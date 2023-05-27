@@ -38,7 +38,7 @@ deploy-gateway-api:
 
 #################
 # See https://github.com/tv2-oss/bifrost-gateway-controller
-BIFROST_VERSION ?= 0.0.19
+BIFROST_VERSION ?= 0.0.20
 
 .PHONY: deploy-bifrost-crds
 deploy-bifrost-crds:
@@ -78,4 +78,4 @@ deploy-istio:
 #################
 .PHONY: example-graph
 example-graph:
-	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values -o graph | dot -Tsvg > output.svg
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values --show-effective-policy -o graph | dot -Tsvg > output.svg
