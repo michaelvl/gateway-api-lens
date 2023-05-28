@@ -78,4 +78,4 @@ deploy-istio:
 #################
 .PHONY: example-graph
 example-graph:
-	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values --show-effective-policy -o graph | dot -Tsvg > output.svg
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values --show-effective-policies --show-policies -o graph | dot -Tsvg > output.svg

@@ -99,14 +99,15 @@ var (
 	paramObfuscateNumbersPaths ArgStringSlice
 	paramObfuscateCharsPaths ArgStringSlice
 
-	kubeconfig           *string
-	outputFormat         *string
-	listenPort           *string
-	skipClustering       bool
-	showEffectivePolicy  bool
+	kubeconfig            *string
+	outputFormat          *string
+	listenPort            *string
+	skipClustering        bool
+	showPolicies          bool
+	showEffectivePolicies bool
 	useGatewayClassParamAsPolicy bool
-	filterNamespaces     ArgStringSlice
-	filterControllerName ArgStringSlice
+	filterNamespaces      ArgStringSlice
+	filterControllerName  ArgStringSlice
 
 	cl                client.Client
 	dcl               *dynamic.DynamicClient
@@ -190,6 +191,7 @@ type HTTPRoute struct {
 	CommonObjRef
 
 	backends     []*CommonObjRef
+	parents      []*Gateway
 
 	// The unprocessed resource
 	raw *gatewayv1b1.HTTPRoute
@@ -256,7 +258,8 @@ func main() {
 	flag.Var(&paramObfuscateNumbersPaths, "obfuscate-numbers", "Dotted-path spec for values from GatewayClass parameters and attached policies where numbers should be obfuscated.")
 	flag.Var(&paramObfuscateCharsPaths, "obfuscate-chars", "Dotted-path spec for values from GatewayClass parameters and attached policies where characters should be obfuscated.")
 	flag.BoolVar(&skipClustering, "skip-clustering", false, "Skip clustering in graph output.")
-	flag.BoolVar(&showEffectivePolicy, "show-effective-policy", false, "Show combined policy for resources.")
+	flag.BoolVar(&showPolicies, "show-policies", false, "Show policies.")
+	flag.BoolVar(&showEffectivePolicies, "show-effective-policies", false, "Show combined policy for Gateway resources.")
 
 	flag.Parse()
 
@@ -310,7 +313,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filterNamespaces = q["namespace"]
 	filterControllerName = q["controller-name"]
-	_, showEffectivePolicy = q["show-effective-policy"]
+	_, showEffectivePolicies = q["show-effective-policies"]
 
 	state, err := collectResources(cl, dcl)
 	if err != nil {
@@ -455,7 +458,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 			gwclass.rawParams, err = getGatewayParameters(cl, dcl, &gwclass)
 			if err != nil {
 				log.Printf("Cannot lookup GatewayClass parameter: %s\n", params.kindNamespacedName)
-			} else {
+			} else if gwClassParameterPath != nil {
 				pl := strings.Split(*gwClassParameterPath, ".")
 				data,found,err := unstructured.NestedMap(gwclass.rawParams.Object, pl...)
 				if err != nil {
@@ -505,7 +508,13 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 				r.backends = append(r.backends, objref)
 			}
 		}
-
+		for _, parent := range rt.Spec.ParentRefs {
+			if string(*parent.Kind) == "Gateway" {
+				if gw := state.gatewayByName(string(parent.Name), string(*parent.Namespace)); gw != nil {
+					r.parents = append(r.parents, gw)
+				}
+			}
+		}
 		r.raw = rt.DeepCopy()
 		state.httpRtList = append(state.httpRtList, r)
 	}
@@ -527,6 +536,16 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 			}
 		}
 		state.gwList = newGwList
+		var newHttpRtList []HTTPRoute
+		for _, rt := range state.httpRtList {
+			for _, gw := range rt.parents {
+				if cnames.Has(string(gw.class.controllerName)) {
+					newHttpRtList = append(newHttpRtList, rt)
+					break
+				}
+			}
+		}
+		state.httpRtList = newHttpRtList
 	}
 	if len(filterNamespaces) > 0 {
 		cnames := set.New(filterNamespaces...)
@@ -586,6 +605,15 @@ func (s *State) gatewayclassByName(name string) *GatewayClass {
 	for _, gwc := range s.gwcList {
 		if gwc.name == name {
 			return &gwc
+		}
+	}
+	return nil
+}
+
+func (s *State) gatewayByName(name, namespace string) *Gateway {
+	for _, gw := range s.gwList {
+		if gw.name == name && gw.namespace == namespace {
+			return &gw
 		}
 	}
 	return nil
@@ -684,7 +712,7 @@ func calculateEffectivePolicy(gw *Gateway, allPolicies []Policy) {
 	p := EffectivePolicy{}
 	data := map[string]any{}
 
-	if useGatewayClassParamAsPolicy && gwClassParameterPath != nil {
+	if useGatewayClassParamAsPolicy && gwClassParameterPath != nil && gw.class != nil && gw.class.parameters != nil && len(gw.class.parameters.data)>0 {
 		data = gw.class.parameters.data
 	}
 
@@ -698,8 +726,8 @@ func calculateEffectivePolicy(gw *Gateway, allPolicies []Policy) {
 	// defaults settings operate in a "more specific beats less specific" fashion
 	for idx := len(policies)-1; idx >= 0; idx-- {
 		p := policies[idx]
-		if pdef, found := p.spec["override"]; found {
-			data = merge(data, pdef).(map[string]any)
+		if povrd, found := p.spec["override"]; found {
+			data = merge(data, povrd).(map[string]any)
 		}
 	}
 
@@ -716,7 +744,7 @@ func outputDotGraph(w io.Writer, s *State) {
 	for _, gwc := range s.gwcList {
 		var params string = fmt.Sprintf("Controller:<br/>%s", gwc.raw.Spec.ControllerName)
 		fmt.Fprintf(w, dot_gatewayclass_template, gwc.id, gwc.name, params)
-		if showEffectivePolicy && gwc.effPolicy != nil {
+		if showEffectivePolicies && gwc.effPolicy != nil {
 			fmt.Fprintf(w, dot_effpolicy_template, gwc.id+"_effpolicy", "", gwc.effPolicy.bodyHtml)
 		}
 		if gwc.parameters != nil {
@@ -742,7 +770,7 @@ func outputDotGraph(w io.Writer, s *State) {
 			}
 		}
 		fmt.Fprintf(w, dot_gateway_template, gw.id, gw.namespacedName, params)
-		if showEffectivePolicy && gw.effPolicy != nil {
+		if showEffectivePolicies && gw.effPolicy != nil {
 			fmt.Fprintf(w, dot_effpolicy_template, gw.id+"_effpolicy", "", gw.effPolicy.bodyHtml)
 		}
 	}
@@ -776,13 +804,15 @@ func outputDotGraph(w io.Writer, s *State) {
 	fmt.Fprint(w, dot_cluster_template_footer)
 
 	// Nodes, attached policies
-	for _, policy := range s.attachedPolicies {
-		fmt.Fprintf(w, dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.bodyHtml)
+	if showPolicies {
+		for _, policy := range s.attachedPolicies {
+			fmt.Fprintf(w, dot_policy_template, policy.id, policy.groupKind, policy.namespacedName, policy.bodyHtml)
+		}
 	}
 
 	// Edges
 	for _, gwc := range s.gwcList {
-		//if showEffectivePolicy {
+		//if showEffectivePolicies {
 		//	fmt.Fprintf(w, "	%s -> %s\n", gwc.id+"_effpolicy", gwc.id)
 		//}
 		if gwc.parameters != nil {
@@ -792,7 +822,7 @@ func outputDotGraph(w io.Writer, s *State) {
 	for _, gw := range s.gwList {
 		if gw.class != nil { // no matching gatewayclass
 			fmt.Fprintf(w, "	%s -> %s\n", gw.id, gw.class.id)
-			if showEffectivePolicy {
+			if showEffectivePolicies {
 				fmt.Fprintf(w, "	%s -> %s\n", gw.id+"_effpolicy", gw.id)
 			}
 		}
@@ -812,16 +842,18 @@ func outputDotGraph(w io.Writer, s *State) {
 		}
 	}
 	// Edges, attached policies
-	for _, policy := range s.attachedPolicies {
-		if policy.targetRef.kind == "Namespace" {  // Namespace policies
-			//fmt.Fprintf(w, "\t%s -> %s\n", policy.id, policy.targetRef.id)
-			for _, gw := range s.gwList {
-				if gw.namespace == policy.targetRef.name && gw.class != nil { // no matching gatewayclass
-					fmt.Fprintf(w, "	%s -> %s [style=dashed]\n", policy.id, gw.id)
+	if showPolicies {
+		for _, policy := range s.attachedPolicies {
+			if policy.targetRef.kind == "Namespace" {  // Namespace policies
+				//fmt.Fprintf(w, "\t%s -> %s\n", policy.id, policy.targetRef.id)
+				for _, gw := range s.gwList {
+					if gw.namespace == policy.targetRef.name && gw.class != nil { // no matching gatewayclass
+						fmt.Fprintf(w, "	%s -> %s [style=dashed]\n", policy.id, gw.id)
+					}
 				}
+			} else {
+				fmt.Fprintf(w, "\t%s -> %s\n", policy.id, policy.targetRef.id)
 			}
-		} else {
-			fmt.Fprintf(w, "\t%s -> %s\n", policy.id, policy.targetRef.id)
 		}
 	}
 	fmt.Fprint(w, dot_graph_template_footer)
