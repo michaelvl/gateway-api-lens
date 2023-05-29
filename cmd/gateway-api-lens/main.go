@@ -398,12 +398,12 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 		pol.raw = policy.DeepCopy()
 		_, isNamespaced, err := unstructured2gvr(cl, &policy)
 		if err != nil {
-			log.Fatalf("Cannot lookup GVR of %+v: %w", policy, err)
+			log.Fatalf("Cannot lookup GVR of %+v: %v", policy, err)
 		}
 		commonPreProc(&pol.CommonObjRef, &policy, isNamespaced, nil)
 		pol.rawTargetRef, err = unstructured2TargetRef(policy)
 		if err != nil {
-			log.Fatalf("Cannot convert policy to targetRef: %w", err)
+			log.Fatalf("Cannot convert policy to targetRef: %v", err)
 		}
 		targetIsNamespaced, err := isNamespacedTargetRef(cl, pol.rawTargetRef)
 		if err != nil {
@@ -423,7 +423,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 		pol.targetRef = objref
 		spec,found,err := unstructured.NestedMap(policy.Object, "spec")
 		if err != nil {
-			log.Fatalf("Cannot lookup policy spec: %w", err)
+			log.Fatalf("Cannot lookup policy spec: %v", err)
 		}
 		if found {
 			// Delete 'targetRef' from spec before rendering BodyText, i.e. it will hold default/override only
@@ -463,7 +463,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 				pl := strings.Split(*gwClassParameterPath, ".")
 				data,found,err := unstructured.NestedMap(gwclass.rawParams.Object, pl...)
 				if err != nil {
-					log.Fatalf("Cannot lookup GatewayClass parameter body: %w", err)
+					log.Fatalf("Cannot lookup GatewayClass parameter body: %v", err)
 				}
 				if found {
 					params.bodyTxt, params.bodyHtml = commonBodyTextProc(data)
@@ -497,7 +497,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 				objref.group = string(Deref(backend.Group, ""))
 				isNamespaced, err := isNamespacedBackendObjectRef(cl, &backend.BackendObjectReference)
 				if err != nil {
-					log.Fatalf("Cannot detect if Backend resource is namespaced: %w", err)
+					log.Fatalf("Cannot detect if Backend resource is namespaced: %v", err)
 				}
 				if isNamespaced {
 					objref.isNamespaced = true
@@ -654,7 +654,7 @@ func commonBodyTextProc(body map[string]any) (string, string) {
 	// Pretty-print
 	b, err := yaml.Marshal(body)
 	if err != nil {
-		log.Fatalf("Cannot marshal resource body selection: %w", err)
+		log.Fatalf("Cannot marshal resource body selection: %v", err)
 	}
 	bodyTxt := string(b)
 	bodyHtml := ""
@@ -715,7 +715,10 @@ func calculateEffectivePolicy(gw *Gateway, allPolicies []Policy) {
 	data := map[string]any{}
 
 	if useGatewayClassParamAsPolicy && gwClassParameterPath != nil && gw.class != nil && gw.class.parameters != nil && len(gw.class.parameters.data)>0 {
-		data = gw.class.parameters.data
+		def, found := gw.class.parameters.data["default"]
+		if found {
+			data = def.(map[string]any)
+		}
 	}
 
 	// overrides settings operate in a "less specific beats more specific" fashion

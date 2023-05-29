@@ -67,6 +67,14 @@ the effective policy (the result of merging all attached policies):
 
 ![Effective policies](doc/images/effective-policies.png)
 
+Evaluation of `GatewayClass` parameters
+(`gateway.tv2.dk/GatewayClassBlueprint` in the example above) can be
+included in the effective policies. This is controlled with
+`--use-gatewaylass-param-as-policy`. If the path of the policy
+`default` and `override` is not as defined by GEP-713, a custom path
+can be defined with `--gwc-param-path`. Parameters like these are
+considered highest precedence, i.e. higher than `GatewayClass`.
+
 # Policies in Table Format
 
 ```bash
