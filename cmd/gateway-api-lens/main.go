@@ -313,6 +313,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filterNamespaces = q["namespace"]
 	filterControllerName = q["controller-name"]
+	_, showPolicies = q["show-policies"]
 	_, showEffectivePolicies = q["show-effective-policies"]
 
 	state, err := collectResources(cl, dcl)
