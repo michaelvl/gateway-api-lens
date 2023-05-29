@@ -253,7 +253,7 @@ func main() {
 	flag.Var(&filterControllerName, "controller-name", "Limit resources to those related to specific controller. Can be specified multiple times. Default is to use all controllers")
 	outputFormat = flag.String("o", "policy", "output format [policy|graph|hierarchy|route-tree|gateways]")
 	gwClassParameterPath = flag.String("gwc-param-path", "", "Dotted-path spec for data from GatewayClass parameters to show in graph output. Must be of type map")
-	flag.BoolVar(&useGatewayClassParamAsPolicy, "use-gatewaylass-param-as-policy", true, "Use GatewayClass parameters as if they where a policy using path given by `gwc-param-path` as policy `spec`.")
+	flag.BoolVar(&useGatewayClassParamAsPolicy, "use-gatewaylass-param-as-policy", true, "Use GatewayClass parameters as if they where a policy when calculating effective policy. Uses path given by `gwc-param-path` as policy `spec`.")
 
 	flag.Var(&paramObfuscateNumbersPaths, "obfuscate-numbers", "Dotted-path spec for values from GatewayClass parameters and attached policies where numbers should be obfuscated.")
 	flag.Var(&paramObfuscateCharsPaths, "obfuscate-chars", "Dotted-path spec for values from GatewayClass parameters and attached policies where characters should be obfuscated.")
@@ -658,8 +658,9 @@ func commonBodyTextProc(body map[string]any) (string, string) {
 	bodyTxt := string(b)
 	bodyHtml := ""
  	for _,ln := range strings.Split(bodyTxt, "\n") {
-		if ln != "" {
-			bodyHtml += fmt.Sprintf("%s<br/>", strings.ReplaceAll(ln, " ", "<i> </i>"))
+		if ln != "" { // To control leading white-space, replace ' ' by '<i> </i>'
+			s := strings.TrimLeft(ln, " ")
+			bodyHtml += fmt.Sprintf("%s%s<br/>", strings.Repeat("<i> </i>", len(ln)-len(s)), s)
 		}
 	}
 	return bodyTxt, bodyHtml
