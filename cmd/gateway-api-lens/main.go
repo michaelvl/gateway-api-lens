@@ -511,7 +511,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 		}
 		for _, parent := range rt.Spec.ParentRefs {
 			if string(*parent.Kind) == "Gateway" {
-				if gw := state.gatewayByName(string(parent.Name), string(*parent.Namespace)); gw != nil {
+				if gw := state.gatewayByName(string(parent.Name), string(Deref(parent.Namespace, gatewayv1b1.Namespace(rt.ObjectMeta.Namespace)))); gw != nil {
 					r.parents = append(r.parents, gw)
 				}
 			}
