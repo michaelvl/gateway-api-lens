@@ -311,8 +311,12 @@ func main() {
 
 func httpHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	filterNamespaces = q["namespace"]
-	filterControllerName = q["controller-name"]
+	if n, found := q["namespace"]; found {
+		filterNamespaces = n
+	}
+	if c, found := q["controller-name"]; found {
+		filterControllerName = c
+	}
 	_, showPolicies = q["show-policies"]
 	_, showEffectivePolicies = q["show-effective-policies"]
 
