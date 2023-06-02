@@ -20,14 +20,14 @@ delete-cluster:
 	kind delete cluster
 
 #################
-GATEWAY_API_VERSION ?= v0.6.1
+GATEWAY_API_VERSION ?= v0.7.0
 
 .PHONY: gateway-api-upstream-get
 gateway-api-upstream-get:
 	mkdir -p upstream-gateway-api-crds upstream-gateway-api-webhook
 	kubectl kustomize "github.com/kubernetes-sigs/gateway-api/config/crd?ref=$(GATEWAY_API_VERSION)" > upstream-gateway-api-crds/crds.yaml
 	#kubectl kustomize "github.com/kubernetes-sigs/gateway-api/config/crd/experimental?ref=$(GATEWAY_API_VERSION)" > upstream-gateway-api-crds/crds.yaml
-	(cd upstream-gateway-api-webhook && for manifestfile in 0-namespace.yaml admission_webhook.yaml certificate_config.yaml; do curl -sL -O https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/main/config/webhook/$$manifestfile; done)
+	(cd upstream-gateway-api-webhook && for manifestfile in 0-namespace.yaml admission_webhook.yaml certificate_config.yaml; do curl -sL -O https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/$(GATEWAY_API_VERSION)/config/webhook/$$manifestfile; done)
 
 .PHONY: deploy-gateway-api
 deploy-gateway-api:
@@ -79,3 +79,29 @@ deploy-istio:
 .PHONY: example-graph
 example-graph:
 	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values --show-effective-policies --show-policies -o graph | dot -Tsvg > output.svg
+
+.PHONY: test-run
+test-run: example-graph
+	echo "Testing 'example-graph'"
+	if (( `cat output.svg | wc -l` < 400 )); then exit 1; fi
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values --show-policies=false -o graph | dot -Tsvg > output.svg
+	echo "Testing run 1"
+	if (( `cat output.svg | wc -l` < 280 )); then exit 1; fi
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values --show-effective-policies --show-policies=false -o graph | dot -Tsvg > output.svg
+	echo "Testing run 2"
+	if (( `cat output.svg | wc -l` < 380 )); then exit 1; fi
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values --show-effective-policies --show-policies -o graph | dot -Tsvg > output.svg
+	echo "Testing run 3"
+	if (( `cat output.svg | wc -l` < 400 )); then exit 1; fi
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values -o policy > output.txt
+	echo "Testing run 4"
+	if (( `cat output.txt | wc -l` < 5 )); then exit 1; fi
+	grep -q foo-infra output.txt
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values -o hierarchy > output.txt
+	echo "Testing run 5"
+	if (( `cat output.txt | wc -l` < 5 )); then exit 1; fi
+	grep -q foo-infra output.txt
+	bin/linux_amd64/gateway-api-lens --gwc-param-path spec.values -o route-tree > output.txt
+	echo "Testing run 6"
+	if (( `cat output.txt | wc -l` < 4 )); then exit 1; fi
+	grep -q PathPrefix output.txt
