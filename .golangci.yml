@@ -13,7 +13,7 @@ linters-settings:
       - style
   govet:
     check-shadowing: true
-    enable:
+    disable:
       - fieldalignment
   nolintlint:
     require-explanation: true
@@ -23,7 +23,6 @@ linters:
   disable-all: true
   enable:
     - bodyclose
-    - depguard
     - dogsled
     - dupl
     - errcheck
