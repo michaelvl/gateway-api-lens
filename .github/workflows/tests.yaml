@@ -26,6 +26,14 @@ jobs:
         run: |
           make build
 
+      - name: Test
+        run: |
+          make test
+
+      - name: Lint
+        run: |
+          make lint
+
       - name: Setup test environment
         run: |
           make gateway-api-upstream-get all-setup
