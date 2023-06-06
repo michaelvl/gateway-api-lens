@@ -232,6 +232,16 @@ type KubeObj interface {
 	GetObjectKind() schema.ObjectKind
 }
 
+type ResourceFilter struct {
+	namespaces     []string
+	controllerName []string
+}
+
+type Layout struct {
+	showPolicies          bool
+	showEffectivePolicies bool
+}
+
 type ArgStringSlice []string
 
 func (p *ArgStringSlice) String() string {
@@ -293,7 +303,8 @@ func main() {
 	}
 	dcl = dynamic.NewForConfigOrDie(config)
 
-	state, err := collectResources(cl, dcl)
+	filters := ResourceFilter{filterNamespaces, filterControllerName}
+	state, err := collectResources(cl, dcl, filters)
 	if err != nil {
 		panic(err)
 	}
@@ -313,7 +324,8 @@ func main() {
 		case "policy":
 			outputTxtTablePolicyFocus(state)
 		case "graph":
-			outputDotGraph(os.Stdout, state)
+			layout := Layout{showPolicies, showEffectivePolicies}
+			outputDotGraph(os.Stdout, state, layout)
 		case "hierarchy":
 			outputTxtClassHierarchy(state)
 		case "route-tree":
@@ -326,23 +338,25 @@ func main() {
 
 func httpHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	filters := ResourceFilter{filterNamespaces, filterControllerName}
 	if n, found := q["namespace"]; found {
-		filterNamespaces = n
+		filters.namespaces = n
 	}
 	if c, found := q["controller-name"]; found {
-		filterControllerName = c
+		filters.controllerName = c
 	}
-	_, showPolicies = q["show-policies"]
-	_, showEffectivePolicies = q["show-effective-policies"]
+	layout := Layout{}
+	_, layout.showPolicies = q["show-policies"]
+	_, layout.showEffectivePolicies = q["show-effective-policies"]
 
-	state, err := collectResources(cl, dcl)
+	state, err := collectResources(cl, dcl, filters)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	var buf bytes.Buffer
-	outputDotGraph(&buf, state)
+	outputDotGraph(&buf, state, layout)
 
 	fmt.Fprintf(w, `
 <html><body>
@@ -361,7 +375,7 @@ document.getElementById("gwapi").innerHTML = svg;
 }
 
 //nolint:gocyclo // this function has a repeating character and thus not as complex as the number of loops indicate
-func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, error) {
+func collectResources(cl client.Client, dcl *dynamic.DynamicClient, filters ResourceFilter) (*State, error) {
 	var err error
 	gwcList := &gatewayv1b1.GatewayClassList{}
 	err = cl.List(context.TODO(), gwcList, client.InNamespace(""))
@@ -560,8 +574,8 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 	}
 
 	// Apply filters - we deliberately do this on processed items to have access to processed fields
-	if len(filterControllerName) > 0 {
-		cnames := set.New(filterControllerName...)
+	if len(filters.controllerName) > 0 {
+		cnames := set.New(filters.controllerName...)
 		var newGwcList []GatewayClass
 		for idx := range state.gwcList {
 			if cnames.Has(state.gwcList[idx].controllerName) {
@@ -587,8 +601,8 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient) (*State, err
 		}
 		state.httpRtList = newHTTPRtList
 	}
-	if len(filterNamespaces) > 0 {
-		cnames := set.New(filterNamespaces...)
+	if len(filters.namespaces) > 0 {
+		cnames := set.New(filters.namespaces...)
 		var newGwList []Gateway
 		for idx := range state.gwList {
 			if cnames.Has(state.gwList[idx].namespace) {
@@ -804,7 +818,7 @@ func calculateEffectivePolicy(gw *Gateway, allPolicies []Policy) {
 }
 
 //nolint:gocyclo // this function has a repeating character and thus not as complex as the number of loops indicate
-func outputDotGraph(w io.Writer, s *State) {
+func outputDotGraph(w io.Writer, s *State, layout Layout) {
 	fmt.Fprint(w, dotGraphTemplateHeader)
 
 	// Nodes, GatewayClasses and parameters
@@ -813,7 +827,7 @@ func outputDotGraph(w io.Writer, s *State) {
 		gwc := &s.gwcList[idx]
 		var params = fmt.Sprintf("Controller:<br/>%s", gwc.raw.Spec.ControllerName)
 		fmt.Fprintf(w, dotGatewayclassTemplate, gwc.id, gwc.name, params)
-		if showEffectivePolicies && gwc.effPolicy != nil {
+		if layout.showEffectivePolicies && gwc.effPolicy != nil {
 			fmt.Fprintf(w, dotEffpolicyTemplate, gwc.id+"_effpolicy", "", gwc.effPolicy.bodyHTML)
 		}
 		if gwc.parameters != nil {
@@ -840,7 +854,7 @@ func outputDotGraph(w io.Writer, s *State) {
 			}
 		}
 		fmt.Fprintf(w, dotGatewayTemplate, gw.id, gw.namespacedName, params)
-		if showEffectivePolicies && gw.effPolicy != nil {
+		if layout.showEffectivePolicies && gw.effPolicy != nil {
 			fmt.Fprintf(w, dotEffpolicyTemplate, gw.id+"_effpolicy", "", gw.effPolicy.bodyHTML)
 		}
 	}
@@ -876,7 +890,7 @@ func outputDotGraph(w io.Writer, s *State) {
 	fmt.Fprint(w, dotClusterTemplateFooter)
 
 	// Nodes, attached policies
-	if showPolicies {
+	if layout.showPolicies {
 		for idx := range s.attachedPolicies {
 			policy := &s.attachedPolicies[idx]
 			fmt.Fprintf(w, dotPolicyTemplate, policy.id, policy.groupKind, policy.namespacedName, policy.bodyHTML)
@@ -894,7 +908,7 @@ func outputDotGraph(w io.Writer, s *State) {
 		gw := &s.gwList[idx]
 		if gw.class != nil { // no matching gatewayclass
 			fmt.Fprintf(w, "	%s -> %s\n", gw.id, gw.class.id)
-			if showEffectivePolicies {
+			if layout.showEffectivePolicies {
 				fmt.Fprintf(w, "	%s -> %s\n", gw.id+"_effpolicy", gw.id)
 			}
 		}
@@ -915,7 +929,7 @@ func outputDotGraph(w io.Writer, s *State) {
 		}
 	}
 	// Edges, attached policies
-	if showPolicies {
+	if layout.showPolicies {
 		for idx := range s.attachedPolicies {
 			policy := &s.attachedPolicies[idx]
 			if policy.targetRef.kind == "Namespace" { // Namespace policies
