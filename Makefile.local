@@ -20,7 +20,7 @@ delete-cluster:
 	kind delete cluster
 
 #################
-GATEWAY_API_VERSION ?= v0.7.0
+GATEWAY_API_VERSION ?= v0.7.1
 
 .PHONY: gateway-api-upstream-get
 gateway-api-upstream-get:
@@ -38,7 +38,7 @@ deploy-gateway-api:
 
 #################
 # See https://github.com/tv2-oss/bifrost-gateway-controller
-BIFROST_VERSION ?= 0.0.20
+BIFROST_VERSION ?= 0.0.21
 
 .PHONY: deploy-bifrost-crds
 deploy-bifrost-crds:
@@ -68,7 +68,7 @@ deploy-bifrost-getting-started-usecase:
 	kubectl apply -f ${BIFROST_URL}/hack/demo/user-gateway-acl.yaml
 
 #################
-ISTIO_VERSION ?= 1.17.2
+ISTIO_VERSION ?= 1.18.0
 
 .PHONY: deploy-istio
 deploy-istio:
