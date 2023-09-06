@@ -45,7 +45,7 @@ jobs:
           go-version-file: "go.mod"
           cache: true
 
-      - uses: sigstore/cosign-installer@6e04d228eb30da1757ee4e1dd75a0ec73a653e06 # tag=v3.1.1
+      - uses: sigstore/cosign-installer@11086d25041f77fe8fe7b9ea4e48e3b9192b8f19 # tag=v3.1.2
 
       # To be compatible with ENVs in PRs
       - name: Get SHA that triggered release
