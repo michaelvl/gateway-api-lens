@@ -108,6 +108,7 @@ var (
 	skipClustering               bool
 	showPolicies                 bool
 	showEffectivePolicies        bool
+	showEmptyEffectivePolicies   bool
 	useGatewayClassParamAsPolicy bool
 	filterNamespaces             ArgStringSlice
 	filterControllerName         ArgStringSlice
@@ -218,7 +219,6 @@ type Policy struct {
 
 type EffectivePolicy struct {
 	// Policy data
-	//nolint:unused // Currently unused, but possibly used in the future
 	data map[string]any
 
 	// Marshalled YAML of data
@@ -238,8 +238,9 @@ type ResourceFilter struct {
 }
 
 type Layout struct {
-	showPolicies          bool
-	showEffectivePolicies bool
+	showPolicies               bool
+	showEffectivePolicies      bool
+	showEmptyEffectivePolicies bool
 }
 
 type ArgStringSlice []string
@@ -275,7 +276,8 @@ func main() {
 	flag.Var(&paramObfuscateCharsPaths, "obfuscate-chars", "Dotted-path spec for values from GatewayClass parameters and attached policies where characters should be obfuscated.")
 	flag.BoolVar(&skipClustering, "skip-clustering", false, "Skip clustering in graph output.")
 	flag.BoolVar(&showPolicies, "show-policies", false, "Show policies.")
-	flag.BoolVar(&showEffectivePolicies, "show-effective-policies", false, "Show combined policy for Gateway resources.")
+	flag.BoolVar(&showEffectivePolicies, "show-effective-policies", false, "Show effective combined policy for Gateway resources.")
+	flag.BoolVar(&showEmptyEffectivePolicies, "show-empty-effective-policies", false, "Show empty effective combined policy for Gateway resources.")
 
 	flag.Parse()
 
@@ -324,7 +326,7 @@ func main() {
 		case "policy":
 			outputTxtTablePolicyFocus(state)
 		case "graph":
-			layout := Layout{showPolicies, showEffectivePolicies}
+			layout := Layout{showPolicies, showEffectivePolicies, showEmptyEffectivePolicies}
 			outputDotGraph(os.Stdout, state, layout)
 		case "hierarchy":
 			outputTxtClassHierarchy(state)
@@ -348,6 +350,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	layout := Layout{}
 	_, layout.showPolicies = q["show-policies"]
 	_, layout.showEffectivePolicies = q["show-effective-policies"]
+	_, layout.showEmptyEffectivePolicies = q["show-empty-effective-policies"]
 
 	state, err := collectResources(cl, dcl, filters)
 	if err != nil {
@@ -422,7 +425,7 @@ func collectResources(cl client.Client, dcl *dynamic.DynamicClient, filters Reso
 			var found bool
 			_, found, err = unstructured.NestedMap(crdInst.Object, "spec", "targetRef")
 			if err != nil || !found {
-				log.Printf("Missing or invalid targetRef, not a valid attached policy: %s/%s", crdInst.GetNamespace(), crdInst.GetName())
+				log.Printf("Missing or invalid targetRef, not a valid attached policy: %s/%s/%s", crdInst.GetKind(), crdInst.GetNamespace(), crdInst.GetName())
 			} else {
 				attachedPolicies = append(attachedPolicies, crdInst)
 			}
@@ -675,7 +678,7 @@ func (s *State) gatewayByName(name, namespace string) *Gateway {
 	return nil
 }
 
-// Pretty-print `body` and append to `c.bodyHTML`
+// Pretty-print `body` into bodyTxt and append to bodyHTML
 func commonBodyTextProc(body map[string]any) (bodyTxt, bodyHTML string) {
 	// Obfuscate
 	for _, path := range paramObfuscateNumbersPaths {
@@ -813,6 +816,7 @@ func calculateEffectivePolicy(gw *Gateway, allPolicies []Policy) {
 		}
 	}
 
+	p.data = data
 	p.bodyTxt, p.bodyHTML = commonBodyTextProc(data)
 	gw.effPolicy = &p
 }
@@ -828,7 +832,9 @@ func outputDotGraph(w io.Writer, s *State, layout Layout) {
 		var params = fmt.Sprintf("Controller:<br/>%s", gwc.raw.Spec.ControllerName)
 		fmt.Fprintf(w, dotGatewayclassTemplate, gwc.id, gwc.name, params)
 		if layout.showEffectivePolicies && gwc.effPolicy != nil {
-			fmt.Fprintf(w, dotEffpolicyTemplate, gwc.id+"_effpolicy", "", gwc.effPolicy.bodyHTML)
+			if len(gwc.effPolicy.data) > 0 || layout.showEmptyEffectivePolicies {
+				fmt.Fprintf(w, dotEffpolicyTemplate, gwc.id+"_effpolicy", "", gwc.effPolicy.bodyHTML)
+			}
 		}
 		if gwc.parameters != nil {
 			p := gwc.parameters
@@ -855,7 +861,9 @@ func outputDotGraph(w io.Writer, s *State, layout Layout) {
 		}
 		fmt.Fprintf(w, dotGatewayTemplate, gw.id, gw.namespacedName, params)
 		if layout.showEffectivePolicies && gw.effPolicy != nil {
-			fmt.Fprintf(w, dotEffpolicyTemplate, gw.id+"_effpolicy", "", gw.effPolicy.bodyHTML)
+			if len(gw.effPolicy.data) > 0 || layout.showEmptyEffectivePolicies {
+				fmt.Fprintf(w, dotEffpolicyTemplate, gw.id+"_effpolicy", "", gw.effPolicy.bodyHTML)
+			}
 		}
 	}
 	fmt.Fprint(w, dotClusterTemplateFooter)
@@ -908,7 +916,7 @@ func outputDotGraph(w io.Writer, s *State, layout Layout) {
 		gw := &s.gwList[idx]
 		if gw.class != nil { // no matching gatewayclass
 			fmt.Fprintf(w, "	%s -> %s\n", gw.id, gw.class.id)
-			if layout.showEffectivePolicies {
+			if layout.showEffectivePolicies && (len(gw.effPolicy.data) > 0 || layout.showEmptyEffectivePolicies) {
 				fmt.Fprintf(w, "	%s -> %s\n", gw.id+"_effpolicy", gw.id)
 			}
 		}
