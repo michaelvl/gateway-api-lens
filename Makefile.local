@@ -20,21 +20,17 @@ delete-cluster:
 	kind delete cluster
 
 #################
-GATEWAY_API_VERSION ?= v0.7.1
+GATEWAY_API_VERSION ?= v1.0.0
 
 .PHONY: gateway-api-upstream-get
 gateway-api-upstream-get:
-	mkdir -p upstream-gateway-api-crds upstream-gateway-api-webhook
+	mkdir -p upstream-gateway-api-crds
 	kubectl kustomize "github.com/kubernetes-sigs/gateway-api/config/crd?ref=$(GATEWAY_API_VERSION)" > upstream-gateway-api-crds/crds.yaml
 	#kubectl kustomize "github.com/kubernetes-sigs/gateway-api/config/crd/experimental?ref=$(GATEWAY_API_VERSION)" > upstream-gateway-api-crds/crds.yaml
-	(cd upstream-gateway-api-webhook && for manifestfile in 0-namespace.yaml admission_webhook.yaml certificate_config.yaml; do curl -sL -O https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/$(GATEWAY_API_VERSION)/config/webhook/$$manifestfile; done)
 
 .PHONY: deploy-gateway-api
 deploy-gateway-api:
 	kubectl apply -f upstream-gateway-api-crds
-	kubectl apply -f upstream-gateway-api-webhook
-	echo "Waiting for gateway-api admission server to be ready"
-	kubectl -ngateway-system wait --for=condition=Available --timeout=120s deploy gateway-api-admission-server
 
 #################
 # See https://github.com/tv2-oss/bifrost-gateway-controller
