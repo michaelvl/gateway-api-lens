@@ -20,7 +20,7 @@ jobs:
           cache: true
 
       - name: Setup Graphviz
-        uses: ts-graphviz/setup-graphviz@d5b2b6b67007094b256f3fd2fa6cf0ac41ceef25 # tag=v2.0.0
+        uses: ts-graphviz/setup-graphviz@b1de5da23ed0a6d14e0aeee8ed52fdd87af2363c # tag=v2.0.2
 
       - name: Build
         run: |
